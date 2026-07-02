@@ -129,6 +129,7 @@ type PendingSnap = {
 };
 
 const STORAGE_KEY = "ghostboard.state.v1";
+const CLIPBOARD_PREFIX = "greyboard/objects:";
 const EMPTY_INTERACTION: Interaction = { type: "none" };
 const DEFAULT_INK = "defaultInk";
 const MIN_SCALE = 0.18;
@@ -293,6 +294,18 @@ function Ghostboard() {
         return;
       }
 
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
+        event.preventDefault();
+        void copySelectionToClipboard();
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
+        event.preventDefault();
+        void pasteFromClipboard();
+        return;
+      }
+
       if (event.key === "Delete" || event.key === "Backspace") {
         deleteSelection();
       }
@@ -414,6 +427,63 @@ function Ghostboard() {
     setObjects(before.filter((object) => !ids.has(object.id)), before);
   }
 
+  async function copySelectionToClipboard() {
+    commitEditor();
+    const selected = boardRef.current.objects.filter((object) => boardRef.current.selectedIds.includes(object.id));
+    if (!selected.length) return;
+    const payload = `${CLIPBOARD_PREFIX}${JSON.stringify({ objects: selected })}`;
+    try {
+      const imageBlob = renderObjectsToPng(selected, boardRef.current.settings);
+      if ("ClipboardItem" in window && imageBlob) {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            "text/plain": new Blob([payload], { type: "text/plain" }),
+            "image/png": imageBlob,
+          }),
+        ]);
+      } else {
+        await navigator.clipboard.writeText(payload);
+      }
+    } catch {
+      try {
+        await navigator.clipboard.writeText(payload);
+      } catch {
+        // Clipboard access can be denied outside trusted browser gestures.
+      }
+    }
+  }
+
+  async function pasteFromClipboard() {
+    commitEditor();
+    let text = "";
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      return;
+    }
+    if (!text.startsWith(CLIPBOARD_PREFIX)) return;
+    try {
+      const parsed = JSON.parse(text.slice(CLIPBOARD_PREFIX.length)) as { objects?: BoardObject[] };
+      if (!Array.isArray(parsed.objects) || !parsed.objects.length) return;
+      const before = cloneObjects(boardRef.current.objects);
+      const pasted = cloneObjects(parsed.objects).map((object) => {
+        object.id = createId();
+        object.createdAt = Date.now();
+        object.updatedAt = Date.now();
+        applyMove(object, object, 32, 32);
+        return object;
+      });
+      boardRef.current.objects = [...boardRef.current.objects, ...pasted];
+      boardRef.current.selectedIds = pasted.map((object) => object.id);
+      pushHistory(before);
+      save();
+      requestRender();
+      forceUpdate();
+    } catch {
+      return;
+    }
+  }
+
   function commitEditor() {
     const active = activeEditorRef.current;
     if (!active) return;
@@ -425,7 +495,7 @@ function Ghostboard() {
       boardRef.current.objects = current;
       boardRef.current.selectedIds = boardRef.current.selectedIds.filter((id) => id !== active.id);
     } else {
-      boardRef.current.selectedIds = [];
+      boardRef.current.selectedIds = active.isNew ? [active.id] : [];
     }
     if (JSON.stringify(active.startObjects) !== JSON.stringify(current)) {
       pushHistory(active.startObjects);
@@ -1207,6 +1277,7 @@ function Ghostboard() {
                 <span>Middle mouse drag = pan</span>
                 <span>Control + scroll = zoom</span>
                 <span>Shift + scroll = horizontal pan</span>
+                <span>Copy image / paste: Control C and Control V</span>
                 <span>Undo / redo: Control Z and Control Y</span>
                 <span>Double-click text to edit</span>
               </>
@@ -1218,6 +1289,7 @@ function Ghostboard() {
                 <span>Two-finger drag = pan</span>
                 <span>Control + two-finger scroll = zoom</span>
                 <span>Shift + two-finger scroll = horizontal pan</span>
+                <span>Copy image / paste: Control C and Control V</span>
                 <span>Undo / redo: Control Z and Control Y</span>
                 <span>Double-tap text to edit</span>
               </>
@@ -1420,6 +1492,35 @@ function renderSelectBox(ctx: CanvasRenderingContext2D, start: Point, current: P
   ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
   ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
   ctx.restore();
+}
+
+function renderObjectsToPng(objects: BoardObject[], settings: Settings) {
+  if (!objects.length) return null;
+  const bounds = objects.reduce((rect, object) => unionRects(rect, objectBounds(object)), objectBounds(objects[0]));
+  const padding = 28;
+  const width = Math.ceil(Math.max(bounds.width + padding * 2, 1));
+  const height = Math.ceil(Math.max(bounds.height + padding * 2, 1));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.fillStyle = currentTheme(settings).background;
+  ctx.fillRect(0, 0, width, height);
+  ctx.save();
+  ctx.translate(padding - bounds.x, padding - bounds.y);
+  for (const object of objects) renderObject(ctx, object, settings);
+  ctx.restore();
+  return dataUrlToBlob(canvas.toDataURL("image/png"));
+}
+
+function dataUrlToBlob(dataUrl: string) {
+  const [meta, data] = dataUrl.split(",");
+  const mime = meta.match(/data:(.*?);base64/)?.[1] ?? "image/png";
+  const binary = window.atob(data);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
 }
 
 function renderEraserCursor(ctx: CanvasRenderingContext2D, point: Point, radius: number) {
@@ -1796,6 +1897,14 @@ function rectsIntersect(a: Rect, b: Rect) {
     a.x + a.width >= b.x &&
     a.y <= b.y + b.height &&
     a.y + a.height >= b.y;
+}
+
+function unionRects(a: Rect, b: Rect): Rect {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  const maxX = Math.max(a.x + a.width, b.x + b.width);
+  const maxY = Math.max(a.y + a.height, b.y + b.height);
+  return { x, y, width: maxX - x, height: maxY - y };
 }
 
 function expandRect(rect: Rect, amount: number): Rect {
