@@ -227,6 +227,43 @@ textarea {
   font-size: 12px;
 }
 
+.confirm-panel {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  color: var(--gb-sidebar-text, rgba(255, 255, 255, 0.92));
+  background: var(--gb-panel-bg, rgba(255, 255, 255, 0.055));
+  border: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 12%, transparent);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.confirm-panel span {
+  color: var(--gb-subtle-text, rgba(255, 255, 255, 0.58));
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.confirm-actions button {
+  min-height: 30px;
+  padding: 5px 10px;
+  color: var(--gb-sidebar-text, #fff);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 18%, transparent);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.confirm-actions button:hover,
+.confirm-actions button:focus-visible {
+  background: var(--gb-hover-bg, rgba(255, 255, 255, 0.08));
+  outline: 0;
+}
+
 .settings-panel label {
   display: grid;
   gap: 6px;

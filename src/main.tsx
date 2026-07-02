@@ -106,6 +106,7 @@ type BoardState = {
 
 type Interaction =
   | { type: "none" }
+  | { type: "pending-canvas"; pointerId: number; startScreen: Point; startWorld: Point; startedAt: number; forceAngleSnap: boolean }
   | { type: "pan"; pointerId: number; last: Point }
   | { type: "draw"; pointerId: number; points: Point[]; forceAngleSnap: boolean }
   | { type: "erase"; pointerId: number; erasedIds: Set<string>; before: BoardObject[]; cursor: Point; deleteText: boolean }
@@ -131,6 +132,8 @@ const DEFAULT_INK = "defaultInk";
 const MIN_SCALE = 0.18;
 const MAX_SCALE = 5;
 const HIT_TOLERANCE = 12;
+const CLICK_MAX_DURATION_MS = 250;
+const DRAG_THRESHOLD_PX = 5;
 const DEFAULT_TEXT_LINE_HEIGHT = 1.16;
 const TEXT_FONT_FAMILY = "\"Segoe Print\", \"Comic Sans MS\", \"Bradley Hand ITC\", cursive";
 const THEME = {
@@ -180,15 +183,13 @@ const DEFAULT_STATE: BoardState = {
 
 let runtimeBoardState: BoardState = DEFAULT_STATE;
 
-const TOOL_LABELS: Array<{ id: Tool | "undo" | "redo" | "clear" | "settings"; label: string; hint: string; icon: string }> = [
+const TOOL_LABELS: Array<{ id: Tool | "clear" | "settings"; label: string; hint: string; icon: string }> = [
   { id: "select", label: "Select / Move", hint: "Move, resize, rotate", icon: "↖" },
   { id: "text", label: "Text", hint: "Click anywhere for big text", icon: "T" },
   { id: "draw", label: "Draw", hint: "Freehand chalk", icon: "⌁" },
   { id: "erase", label: "Erase", hint: "Delete whole strokes", icon: "⌫" },
   { id: "shape", label: "Smart Shape", hint: "Snap rough shapes", icon: "△" },
-  { id: "pan", label: "Pan", hint: "Drag the board", icon: "☝" },
-  { id: "undo", label: "Undo", hint: "Undo last action", icon: "↶" },
-  { id: "redo", label: "Redo", hint: "Redo last action", icon: "↷" },
+  { id: "pan", label: "Pan", hint: "Drag the board", icon: "H" },
   { id: "clear", label: "Clear Board", hint: "Remove everything", icon: "⌧" },
   { id: "settings", label: "Settings", hint: "Snap and appearance", icon: "⚙" },
 ];
@@ -207,6 +208,7 @@ function Ghostboard() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editor, setEditor] = useState<EditorState | null>(null);
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [tick, setTick] = useState(0);
   runtimeBoardState = boardRef.current;
   activeEditorRef.current = editor;
@@ -264,7 +266,14 @@ function Ghostboard() {
           event.preventDefault();
           setSidebarOpen(false);
           setSettingsOpen(false);
+          setClearConfirmOpen(false);
         }
+        return;
+      }
+
+      if (event.key === "Enter" && clearConfirmOpen) {
+        event.preventDefault();
+        confirmClearBoard();
         return;
       }
 
@@ -288,7 +297,7 @@ function Ghostboard() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [editor, settingsOpen, sidebarOpen]);
+  }, [clearConfirmOpen, editor, settingsOpen, sidebarOpen]);
 
   function forceUpdate() {
     setTick((value) => value + 1);
@@ -309,6 +318,7 @@ function Ghostboard() {
 
   function setTool(tool: Tool) {
     commitEditor();
+    setClearConfirmOpen(false);
     boardRef.current.currentTool = tool;
     setSidebarOpen(false);
     save();
@@ -378,8 +388,18 @@ function Ghostboard() {
   function clearBoard() {
     commitEditor();
     if (!boardRef.current.objects.length) return;
+    setClearConfirmOpen(true);
+  }
+
+  function confirmClearBoard() {
+    if (!boardRef.current.objects.length) {
+      setClearConfirmOpen(false);
+      return;
+    }
     setObjects([], boardRef.current.objects);
     setSidebarOpen(false);
+    setSettingsOpen(false);
+    setClearConfirmOpen(false);
   }
 
   function deleteSelection() {
@@ -596,6 +616,21 @@ function Ghostboard() {
       return;
     }
 
+    if (state.currentTool === "text") {
+      cancelPendingSnap();
+      commitEditor();
+      canvas.setPointerCapture(event.pointerId);
+      interactionRef.current = {
+        type: "pending-canvas",
+        pointerId: event.pointerId,
+        startScreen: screen,
+        startWorld: world,
+        startedAt: Date.now(),
+        forceAngleSnap: event.shiftKey,
+      };
+      return;
+    }
+
     if (state.currentTool === "select") {
       cancelPendingSnap();
       commitEditor();
@@ -629,6 +664,23 @@ function Ghostboard() {
       const last = interaction.points[interaction.points.length - 1];
       if (!last || distance(last, world) > 0.8) {
         interaction.points.push({ ...world, pressure: event.pressure || 0.5, t: Date.now() });
+        requestRender();
+      }
+      return;
+    }
+
+    if (interaction.type === "pending-canvas" && interaction.pointerId === event.pointerId) {
+      if (event.shiftKey) interaction.forceAngleSnap = true;
+      if (distance(interaction.startScreen, screen) > DRAG_THRESHOLD_PX) {
+        interactionRef.current = {
+          type: "draw",
+          pointerId: event.pointerId,
+          points: [
+            { ...interaction.startWorld, pressure: event.pressure || 0.5, t: interaction.startedAt },
+            { ...world, pressure: event.pressure || 0.5, t: Date.now() },
+          ],
+          forceAngleSnap: interaction.forceAngleSnap,
+        };
         requestRender();
       }
       return;
@@ -696,6 +748,13 @@ function Ghostboard() {
         pushHistory(before);
         save();
         scheduleSnap(stroke.id, cleaned, interaction.forceAngleSnap);
+      }
+    }
+
+    if (interaction.type === "pending-canvas" && interaction.pointerId === event.pointerId) {
+      const duration = Date.now() - interaction.startedAt;
+      if (duration <= CLICK_MAX_DURATION_MS || distance(interaction.startScreen, eventPoint(event)) <= DRAG_THRESHOLD_PX) {
+        createTextAt(interaction.startWorld);
       }
     }
 
@@ -902,9 +961,7 @@ function Ghostboard() {
               className={`sidebar-tool ${boardRef.current.currentTool === tool.id ? "is-active" : ""}`}
               type="button"
               onClick={() => {
-                if (tool.id === "undo") undo();
-                else if (tool.id === "redo") redo();
-                else if (tool.id === "clear") clearBoard();
+                if (tool.id === "clear") clearBoard();
                 else if (tool.id === "settings") setSettingsOpen((open) => !open);
                 else setTool(tool.id);
               }}
@@ -917,6 +974,17 @@ function Ghostboard() {
             </button>
           ))}
         </div>
+
+        {clearConfirmOpen && (
+          <div className="confirm-panel" role="dialog" aria-label="Clear board confirmation">
+            <strong>Clear board?</strong>
+            <span>Press Enter to confirm.</span>
+            <div className="confirm-actions">
+              <button type="button" onClick={confirmClearBoard}>Clear</button>
+              <button type="button" onClick={() => setClearConfirmOpen(false)}>Cancel</button>
+            </div>
+          </div>
+        )}
 
         {settingsOpen && (
           <div className="settings-panel">
@@ -1062,9 +1130,15 @@ function Ghostboard() {
         )}
 
         <div className="nav-hints">
-          <span>Middle drag pans</span>
-          <span>Ctrl + wheel zooms</span>
-          <span>Shift + wheel pans sideways</span>
+          <span>Quick click empty space = text</span>
+          <span>Drag empty space = draw</span>
+          <span>Right-click drag = erase</span>
+          <span>Middle mouse drag = pan</span>
+          <span>Desktop: Ctrl + scroll = zoom</span>
+          <span>Mac: Control + two-finger scroll = zoom</span>
+          <span>Shift + scroll = horizontal pan</span>
+          <span>Undo / redo: Control Z and Control Y</span>
+          <span>Mac undo / redo: Command Z and Command Y</span>
           <span>Double-click text to edit</span>
         </div>
       </aside>
