@@ -148,6 +148,8 @@ const THEME = {
     subtleText: "rgba(255,255,255,0.58)",
     panelBg: "rgba(255,255,255,0.055)",
     hoverBg: "rgba(255,255,255,0.08)",
+    accent: "#E85D04",
+    accentText: "#ffffff",
   },
   light: {
     background: "#f6f3ea",
@@ -159,6 +161,8 @@ const THEME = {
     subtleText: "rgba(15,15,15,0.58)",
     panelBg: "rgba(0,0,0,0.045)",
     hoverBg: "rgba(0,0,0,0.06)",
+    accent: "#E85D04",
+    accentText: "#ffffff",
   },
 } as const;
 
@@ -917,6 +921,8 @@ function Ghostboard() {
         "--gb-subtle-text": theme.subtleText,
         "--gb-panel-bg": theme.panelBg,
         "--gb-hover-bg": theme.hoverBg,
+        "--gb-accent": theme.accent,
+        "--gb-accent-text": theme.accentText,
       } as React.CSSProperties}
     >
       <canvas
