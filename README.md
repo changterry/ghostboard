@@ -1,20 +1,20 @@
-# Ghostboard
+# Greyboard
 
-Ghostboard is a shareable black-screen chalkboard for big todo notes and quick drawing. The V1 product target is simple: send someone a website link, they open it, and they can use the board immediately.
+Greyboard is a shareable black-screen chalkboard for big todo notes and quick drawing. The V1 product target is simple: send someone a website link, they open it, and they can use the board immediately.
 
 ## Final User Experience
 
 Send a URL like:
 
 ```text
-https://ghostboard.vercel.app
+https://greyboard.vercel.app
 ```
 
-The recipient opens the link in Chrome, Safari, Edge, or iPad Safari and starts using Ghostboard. There is no download, install, account, app store, browser extension, backend, or terminal command required for the end user.
+The recipient opens the link in Chrome, Safari, Edge, or iPad Safari and starts using Greyboard. There is no download, install, account, app store, browser extension, backend, or terminal command required for the end user.
 
 ## Local-Only Data
 
-Ghostboard V1 stores board data locally in the user’s browser with local browser storage.
+Greyboard V1 stores board data locally in the user's browser with local browser storage.
 
 - Refreshing the page keeps the board.
 - Closing and reopening the same browser keeps the board.
@@ -56,12 +56,12 @@ The deployable static output is written to `dist/`.
 After deployment, the app should open directly at the Vercel URL, for example:
 
 ```text
-https://ghostboard.vercel.app
+https://greyboard.vercel.app
 ```
 
 ## Acceptance Checklist
 
-- A deployed Vercel link opens directly to Ghostboard.
+- A deployed Vercel link opens directly to Greyboard.
 - A new user can use the board with only the link.
 - Text, draw, erase, undo, and redo work from the hosted link.
 - Refresh keeps the board in the same browser.

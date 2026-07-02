@@ -922,7 +922,7 @@ function Ghostboard() {
       <canvas
         ref={canvasRef}
         className="board-canvas"
-        aria-label="Ghostboard canvas"
+        aria-label="Greyboard canvas"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -952,11 +952,11 @@ function Ghostboard() {
 
       <aside className={`sidebar ${sidebarOpen ? "is-open" : ""}`} aria-hidden={!sidebarOpen}>
         <div className="brand">
-          <strong>Ghostboard</strong>
+          <strong>Greyboard</strong>
           <span>Minimal. Distraction-free.</span>
         </div>
 
-        <div className="tool-list" role="toolbar" aria-label="Ghostboard tools">
+        <div className="tool-list" role="toolbar" aria-label="Greyboard tools">
           {TOOL_LABELS.map((tool) => (
             <button
               key={tool.id}
