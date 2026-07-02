@@ -46,6 +46,7 @@ type TextObject = BaseObject & {
   rotation: number;
   text: string;
   fontSize: number;
+  lineHeight?: number;
 };
 
 type StrokeObject = BaseObject & {
@@ -112,6 +113,8 @@ const CHALK = "rgba(248, 248, 238, 0.94)";
 const MIN_SCALE = 0.18;
 const MAX_SCALE = 5;
 const HIT_TOLERANCE = 12;
+const DEFAULT_TEXT_LINE_HEIGHT = 1.16;
+const TEXT_FONT_FAMILY = "\"Segoe Print\", \"Comic Sans MS\", \"Bradley Hand ITC\", cursive";
 
 const DEFAULT_STATE: BoardState = {
   objects: [],
@@ -401,6 +404,7 @@ function Ghostboard() {
       rotation: 0,
       text: "",
       fontSize: boardRef.current.settings.defaultFontSize,
+      lineHeight: DEFAULT_TEXT_LINE_HEIGHT,
       color: CHALK,
       opacity: 0.96,
       createdAt: Date.now(),
@@ -755,8 +759,9 @@ function Ghostboard() {
     ctx.translate(state.viewport.offsetX, state.viewport.offsetY);
     ctx.scale(state.viewport.scale, state.viewport.scale);
 
+    const activeEditorId = activeEditorRef.current?.id;
     for (const object of state.objects) {
-      if (editor?.id === object.id) continue;
+      if (activeEditorId === object.id) continue;
       renderObject(ctx, object, state.settings);
     }
 
@@ -770,7 +775,7 @@ function Ghostboard() {
     }
 
     const selected = state.objects.find((object) => object.id === state.selectedIds[0]);
-    if (selected && editor?.id !== selected.id) {
+    if (selected && activeEditorId !== selected.id) {
       renderSelection(ctx, selected);
     }
     ctx.restore();
@@ -972,13 +977,17 @@ function renderText(ctx: CanvasRenderingContext2D, object: TextObject, settings:
   ctx.fillStyle = object.color;
   ctx.shadowColor = "rgba(255,255,255,0.24)";
   ctx.shadowBlur = settings.chalkTexture ? 5 : 0;
-  ctx.font = `${object.fontSize}px "Segoe Print", "Comic Sans MS", "Bradley Hand ITC", cursive`;
+  ctx.font = `${object.fontSize}px ${TEXT_FONT_FAMILY}`;
   ctx.textBaseline = "top";
+  ctx.textAlign = "left";
   ctx.lineJoin = "round";
 
   const lines = wrapText(ctx, object.text, object.width, object.fontSize);
+  const lineHeightFactor = object.lineHeight ?? DEFAULT_TEXT_LINE_HEIGHT;
+  const lineHeight = object.fontSize * lineHeightFactor;
+  const visualTopOffset = getTextVisualTopOffset(ctx, object.fontSize, lineHeightFactor);
   lines.forEach((line, index) => {
-    const y = index * object.fontSize * 1.16;
+    const y = visualTopOffset + index * lineHeight;
     ctx.fillText(line, 0, y);
     if (settings.chalkTexture) {
       ctx.globalAlpha = object.opacity * 0.13;
@@ -987,6 +996,13 @@ function renderText(ctx: CanvasRenderingContext2D, object: TextObject, settings:
     }
   });
   ctx.restore();
+}
+
+function getTextVisualTopOffset(ctx: CanvasRenderingContext2D, fontSize: number, lineHeight: number) {
+  const metrics = ctx.measureText("Mg");
+  const fontOverhang = Math.max((metrics.fontBoundingBoxAscent || fontSize) - fontSize, 0);
+  const halfLeading = Math.max(fontSize * lineHeight - fontSize, 0) / 2;
+  return fontOverhang / 2 + halfLeading;
 }
 
 function renderStrokePath(
@@ -1420,12 +1436,16 @@ function shapeBounds(shapeType: ShapeKind, geometry: ShapeGeometry): Rect {
 
 function makeEditorStyle(object: TextObject, viewport: Viewport): React.CSSProperties {
   const screen = worldToScreen({ x: object.x, y: object.y }, viewport);
+  const scaledFontSize = object.fontSize * viewport.scale;
+  const scaledLineHeight = object.fontSize * (object.lineHeight ?? DEFAULT_TEXT_LINE_HEIGHT) * viewport.scale;
   return {
     left: `${screen.x}px`,
     top: `${screen.y}px`,
     width: `${object.width * viewport.scale}px`,
     height: `${Math.max(object.height, object.fontSize * 1.35) * viewport.scale}px`,
-    fontSize: `${object.fontSize * viewport.scale}px`,
+    fontSize: `${scaledFontSize}px`,
+    lineHeight: `${scaledLineHeight}px`,
+    fontFamily: TEXT_FONT_FAMILY,
     transform: `rotate(${object.rotation}rad)`,
     transformOrigin: "0 0",
   };
@@ -1435,10 +1455,10 @@ function measureTextBox(object: TextObject) {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
   if (!ctx) return { width: object.width, height: object.height };
-  ctx.font = `${object.fontSize}px "Segoe Print", "Comic Sans MS", cursive`;
+  ctx.font = `${object.fontSize}px ${TEXT_FONT_FAMILY}`;
   const lines = (object.text || "").split("\n");
   const width = Math.max(...lines.map((line) => ctx.measureText(line || " ").width), object.fontSize * 2) + 20;
-  const height = Math.max(lines.length, 1) * object.fontSize * 1.16 + 12;
+  const height = Math.max(lines.length, 1) * object.fontSize * (object.lineHeight ?? DEFAULT_TEXT_LINE_HEIGHT);
   return { width, height };
 }
 

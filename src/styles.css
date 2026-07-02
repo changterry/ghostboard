@@ -67,13 +67,14 @@ textarea {
   min-height: 110px;
   overflow: hidden;
   padding: 0;
+  margin: 0;
+  box-sizing: border-box;
   color: rgba(248, 248, 238, 0.96);
   background: transparent;
   border: 0;
   outline: 0;
   caret-color: rgba(248, 248, 238, 0.96);
   font-family: "Segoe Print", "Comic Sans MS", "Bradley Hand ITC", cursive;
-  line-height: 1.16;
   letter-spacing: 0;
   text-shadow: 0 0 6px rgba(255, 255, 255, 0.2);
   pointer-events: auto;
