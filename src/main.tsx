@@ -190,7 +190,7 @@ const TOOL_LABELS: Array<{ id: Tool | "clear" | "settings"; label: string; hint:
   { id: "draw", label: "Draw", hint: "Freehand chalk", icon: "⌁" },
   { id: "erase", label: "Erase", hint: "Delete whole strokes", icon: "⌫" },
   { id: "shape", label: "Smart Shape", hint: "Snap rough shapes", icon: "△" },
-  { id: "pan", label: "Pan", hint: "Drag the board", icon: "H" },
+  { id: "pan", label: "Pan", hint: "Drag the board", icon: "" },
   { id: "clear", label: "Clear Board", hint: "Remove everything", icon: "⌧" },
   { id: "settings", label: "Settings", hint: "Snap and appearance", icon: "⚙" },
 ];
@@ -968,7 +968,18 @@ function Ghostboard() {
                 else setTool(tool.id);
               }}
             >
-              <span className="tool-icon">{tool.icon}</span>
+              <span className={`tool-icon tool-icon-${tool.id}`}>
+                {tool.id === "pan" ? (
+                  <svg className="pan-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 4v16" />
+                    <path d="M4 12h16" />
+                    <path d="m8 8 4-4 4 4" />
+                    <path d="m8 16 4 4 4-4" />
+                    <path d="m8 8-4 4 4 4" />
+                    <path d="m16 8 4 4-4 4" />
+                  </svg>
+                ) : tool.icon}
+              </span>
               <span>
                 <strong>{tool.label}</strong>
                 <small>{tool.hint}</small>

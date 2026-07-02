@@ -199,6 +199,20 @@ textarea {
   line-height: 1;
 }
 
+.pan-icon {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.tool-icon-pan {
+  font-size: 0;
+}
+
 .sidebar-tool strong,
 .sidebar-tool small {
   display: block;
