@@ -108,10 +108,11 @@ type BoardState = {
 type Interaction =
   | { type: "none" }
   | { type: "pending-canvas"; pointerId: number; startScreen: Point; startWorld: Point; startedAt: number; forceAngleSnap: boolean }
+  | { type: "select-box"; pointerId: number; start: Point; current: Point }
   | { type: "pan"; pointerId: number; last: Point }
   | { type: "draw"; pointerId: number; points: Point[]; forceAngleSnap: boolean }
   | { type: "erase"; pointerId: number; erasedIds: Set<string>; before: BoardObject[]; cursor: Point; deleteText: boolean }
-  | { type: "move"; pointerId: number; id: string; start: Point; objectStart: BoardObject; before: BoardObject[] }
+  | { type: "move"; pointerId: number; ids: string[]; start: Point; objectStarts: BoardObject[]; before: BoardObject[] }
   | { type: "resize"; pointerId: number; id: string; handle: string; start: Point; objectStart: BoardObject; before: BoardObject[] }
   | { type: "rotate"; pointerId: number; id: string; origin: Point; initialPointerAngle: number; objectStart: BoardObject; before: BoardObject[] };
 
@@ -539,6 +540,17 @@ function Ghostboard() {
     if (event.button !== 0) return;
     event.preventDefault();
 
+    if (event.ctrlKey || event.metaKey) {
+      cancelPendingSnap();
+      commitEditor();
+      canvas.setPointerCapture(event.pointerId);
+      interactionRef.current = { type: "select-box", pointerId: event.pointerId, start: world, current: world };
+      state.selectedIds = [];
+      requestRender();
+      forceUpdate();
+      return;
+    }
+
     if (event.detail >= 2) {
       const hit = hitTest(world);
       if (hit?.type === "text") {
@@ -577,7 +589,7 @@ function Ghostboard() {
       return;
     }
 
-    const handle = hitSelectionHandle(world);
+    const handle = state.selectedIds.length === 1 ? hitSelectionHandle(world) : null;
     if (handle && selectedObject) {
       cancelPendingSnap();
       commitEditor();
@@ -611,10 +623,18 @@ function Ghostboard() {
     if (hit) {
       cancelPendingSnap();
       commitEditor();
-      state.selectedIds = [hit.id];
+      const selectedIds = state.selectedIds.includes(hit.id) ? state.selectedIds : [hit.id];
+      state.selectedIds = selectedIds;
       forceUpdate();
       canvas.setPointerCapture(event.pointerId);
-      interactionRef.current = { type: "move", pointerId: event.pointerId, id: hit.id, start: world, objectStart: cloneObject(hit), before: cloneObjects(state.objects) };
+      interactionRef.current = {
+        type: "move",
+        pointerId: event.pointerId,
+        ids: selectedIds,
+        start: world,
+        objectStarts: cloneObjects(state.objects.filter((object) => selectedIds.includes(object.id))),
+        before: cloneObjects(state.objects),
+      };
       return;
     }
 
@@ -688,6 +708,12 @@ function Ghostboard() {
       return;
     }
 
+    if (interaction.type === "select-box" && interaction.pointerId === event.pointerId) {
+      interaction.current = world;
+      requestRender();
+      return;
+    }
+
     if (interaction.type === "erase" && interaction.pointerId === event.pointerId) {
       interaction.cursor = world;
       eraseAt(world);
@@ -695,11 +721,12 @@ function Ghostboard() {
     }
 
     if (interaction.type === "move" && interaction.pointerId === event.pointerId) {
-      const object = boardRef.current.objects.find((item) => item.id === interaction.id);
-      if (!object) return;
       const dx = world.x - interaction.start.x;
       const dy = world.y - interaction.start.y;
-      applyMove(object, interaction.objectStart, dx, dy);
+      for (const original of interaction.objectStarts) {
+        const object = boardRef.current.objects.find((item) => item.id === original.id);
+        if (object) applyMove(object, original, dx, dy);
+      }
       save();
       requestRender();
       forceUpdate();
@@ -758,6 +785,14 @@ function Ghostboard() {
       if (duration <= CLICK_MAX_DURATION_MS || distance(interaction.startScreen, eventPoint(event)) <= DRAG_THRESHOLD_PX) {
         createTextAt(interaction.startWorld);
       }
+    }
+
+    if (interaction.type === "select-box" && interaction.pointerId === event.pointerId) {
+      const rect = normalizeRect(interaction.start, interaction.current);
+      boardRef.current.selectedIds = boardRef.current.objects
+        .filter((object) => rectsIntersect(expandRect(objectBounds(object), 6), rect))
+        .map((object) => object.id);
+      save();
     }
 
     if (interaction.type === "erase" && interaction.pointerId === event.pointerId && interaction.erasedIds.size) {
@@ -891,9 +926,13 @@ function Ghostboard() {
       renderEraserCursor(ctx, interactionRef.current.cursor, HIT_TOLERANCE / state.viewport.scale);
     }
 
-    const selected = state.objects.find((object) => object.id === state.selectedIds[0]);
-    if (selected && activeEditorId !== selected.id) {
-      renderSelection(ctx, selected, state.settings);
+    if (interactionRef.current.type === "select-box") {
+      renderSelectBox(ctx, interactionRef.current.start, interactionRef.current.current, state.settings);
+    }
+
+    const selectedObjects = state.objects.filter((object) => state.selectedIds.includes(object.id) && activeEditorId !== object.id);
+    for (const selected of selectedObjects) {
+      renderSelection(ctx, selected, state.settings, state.selectedIds.length > 1);
     }
     ctx.restore();
   }
@@ -1164,6 +1203,7 @@ function Ghostboard() {
                 <span>Click empty space = text</span>
                 <span>Drag empty space = draw</span>
                 <span>Right-click drag = erase</span>
+                <span>Control + drag = multi-select</span>
                 <span>Middle mouse drag = pan</span>
                 <span>Control + scroll = zoom</span>
                 <span>Shift + scroll = horizontal pan</span>
@@ -1174,6 +1214,7 @@ function Ghostboard() {
               <>
                 <span>Tap empty space = text</span>
                 <span>Press and drag = draw</span>
+                <span>Control + drag = multi-select</span>
                 <span>Two-finger drag = pan</span>
                 <span>Control + two-finger scroll = zoom</span>
                 <span>Shift + two-finger scroll = horizontal pan</span>
@@ -1309,9 +1350,9 @@ function shapeToStrokePoints(object: ShapeObject): Point[] {
   return [...geometry.points, geometry.points[0]];
 }
 
-function renderSelection(ctx: CanvasRenderingContext2D, object: BoardObject, settings: Settings) {
+function renderSelection(ctx: CanvasRenderingContext2D, object: BoardObject, settings: Settings, quiet = false) {
   const box = objectBounds(object);
-  const handles = selectionHandles(object);
+  const handles = quiet ? [] : selectionHandles(object);
   const origin = objectRotationOrigin(object);
   const rotation = object.rotation ?? 0;
   const scale = currentScale(ctx);
@@ -1364,6 +1405,20 @@ function renderSelection(ctx: CanvasRenderingContext2D, object: BoardObject, set
       ctx.stroke();
     }
   }
+  ctx.restore();
+}
+
+function renderSelectBox(ctx: CanvasRenderingContext2D, start: Point, current: Point, settings: Settings) {
+  const rect = normalizeRect(start, current);
+  const scale = currentScale(ctx);
+  const theme = currentTheme(settings);
+  ctx.save();
+  ctx.fillStyle = theme.selection;
+  ctx.strokeStyle = theme.handle;
+  ctx.lineWidth = 1.2 / scale;
+  ctx.setLineDash([6 / scale, 5 / scale]);
+  ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+  ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
   ctx.restore();
 }
 
@@ -1723,6 +1778,33 @@ function objectBounds(object: BoardObject): Rect {
     return pointsBounds(corners);
   }
   return object.bbox;
+}
+
+function normalizeRect(a: Point, b: Point): Rect {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  return {
+    x,
+    y,
+    width: Math.abs(a.x - b.x),
+    height: Math.abs(a.y - b.y),
+  };
+}
+
+function rectsIntersect(a: Rect, b: Rect) {
+  return a.x <= b.x + b.width &&
+    a.x + a.width >= b.x &&
+    a.y <= b.y + b.height &&
+    a.y + a.height >= b.y;
+}
+
+function expandRect(rect: Rect, amount: number): Rect {
+  return {
+    x: rect.x - amount,
+    y: rect.y - amount,
+    width: rect.width + amount * 2,
+    height: rect.height + amount * 2,
+  };
 }
 
 function shapeBounds(shapeType: ShapeKind, geometry: ShapeGeometry): Rect {
