@@ -1,7 +1,7 @@
 :root {
-  color-scheme: dark;
+  color-scheme: dark light;
   font-family: Inter, "Segoe UI", system-ui, sans-serif;
-  background: #000;
+  background: var(--gb-bg, #000);
 }
 
 * {
@@ -15,7 +15,7 @@ body,
   height: 100%;
   margin: 0;
   overflow: hidden;
-  background: #000;
+  background: var(--gb-bg, #000);
 }
 
 button,
@@ -29,7 +29,7 @@ textarea {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  background: #000;
+  background: var(--gb-bg, #000);
 }
 
 .board-canvas {
@@ -39,7 +39,7 @@ textarea {
   height: 100vh;
   touch-action: none;
   cursor: text;
-  background: #000;
+  background: var(--gb-bg, #000);
 }
 
 .ghostboard[data-tool="select"] .board-canvas {
@@ -69,20 +69,20 @@ textarea {
   padding: 0;
   margin: 0;
   box-sizing: border-box;
-  color: rgba(248, 248, 238, 0.96);
+  color: var(--gb-ink, rgba(248, 248, 238, 0.96));
   background: transparent;
   border: 0;
   outline: 0;
-  caret-color: rgba(248, 248, 238, 0.96);
+  caret-color: var(--gb-ink, rgba(248, 248, 238, 0.96));
   font-family: "Segoe Print", "Comic Sans MS", "Bradley Hand ITC", cursive;
   letter-spacing: 0;
-  text-shadow: 0 0 6px rgba(255, 255, 255, 0.2);
+  text-shadow: 0 0 6px color-mix(in srgb, var(--gb-ink, #fff) 22%, transparent);
   pointer-events: auto;
   white-space: pre-wrap;
 }
 
 .text-editor::placeholder {
-  color: rgba(255, 255, 255, 0.35);
+  color: color-mix(in srgb, var(--gb-ink, #fff) 35%, transparent);
 }
 
 .menu-button {
@@ -95,7 +95,7 @@ textarea {
   height: 32px;
   padding: 7px;
   gap: 4px;
-  background: rgba(0, 0, 0, 0.2);
+  background: color-mix(in srgb, var(--gb-bg, #000) 78%, transparent);
   border: 1px solid transparent;
   border-radius: 8px;
   opacity: 0.62;
@@ -105,15 +105,15 @@ textarea {
 .menu-button:hover,
 .menu-button:focus-visible {
   opacity: 1;
-  border-color: rgba(255, 255, 255, 0.18);
+  border-color: color-mix(in srgb, var(--gb-ink, #fff) 18%, transparent);
   outline: 0;
 }
 
 .menu-button span {
   display: block;
   height: 1px;
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 0 4px rgba(255, 255, 255, 0.18);
+  background: var(--gb-ink, rgba(255, 255, 255, 0.9));
+  box-shadow: 0 0 4px color-mix(in srgb, var(--gb-ink, #fff) 18%, transparent);
 }
 
 .sidebar {
@@ -124,9 +124,9 @@ textarea {
   width: min(286px, calc(100vw - 24px));
   height: 100vh;
   padding: 62px 14px 16px;
-  color: rgba(255, 255, 255, 0.92);
-  background: linear-gradient(90deg, rgba(0, 0, 0, 0.92), rgba(0, 0, 0, 0.72));
-  border-right: 1px solid rgba(255, 255, 255, 0.09);
+  color: var(--gb-sidebar-text, rgba(255, 255, 255, 0.92));
+  background: var(--gb-sidebar-bg, rgba(20, 20, 20, 0.85));
+  border-right: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 10%, transparent);
   transform: translateX(-102%);
   visibility: hidden;
   pointer-events: none;
@@ -153,7 +153,7 @@ textarea {
 }
 
 .brand span {
-  color: rgba(255, 255, 255, 0.72);
+  color: var(--gb-subtle-text, rgba(255, 255, 255, 0.72));
   font-size: 12px;
 }
 
@@ -170,7 +170,7 @@ textarea {
   width: 100%;
   min-height: 46px;
   padding: 6px;
-  color: rgba(255, 255, 255, 0.82);
+  color: var(--gb-sidebar-text, rgba(255, 255, 255, 0.82));
   text-align: left;
   background: transparent;
   border: 1px solid transparent;
@@ -181,9 +181,9 @@ textarea {
 .sidebar-tool:hover,
 .sidebar-tool:focus-visible,
 .sidebar-tool.is-active {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.12);
+  color: var(--gb-ink, #fff);
+  background: var(--gb-hover-bg, rgba(255, 255, 255, 0.08));
+  border-color: color-mix(in srgb, var(--gb-ink, #fff) 12%, transparent);
   outline: 0;
 }
 
@@ -192,8 +192,8 @@ textarea {
   width: 34px;
   height: 34px;
   place-items: center;
-  color: rgba(255, 255, 255, 0.94);
-  background: rgba(255, 255, 255, 0.08);
+  color: var(--gb-ink, rgba(255, 255, 255, 0.94));
+  background: var(--gb-hover-bg, rgba(255, 255, 255, 0.08));
   border-radius: 8px;
   font-size: 20px;
   line-height: 1;
@@ -211,7 +211,7 @@ textarea {
 
 .sidebar-tool small {
   margin-top: 2px;
-  color: rgba(255, 255, 255, 0.58);
+  color: var(--gb-subtle-text, rgba(255, 255, 255, 0.58));
   font-size: 11px;
   line-height: 1.22;
 }
@@ -221,8 +221,8 @@ textarea {
   gap: 12px;
   margin-top: 14px;
   padding: 12px;
-  background: rgba(255, 255, 255, 0.055);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--gb-panel-bg, rgba(255, 255, 255, 0.055));
+  border: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 10%, transparent);
   border-radius: 8px;
   font-size: 12px;
 }
@@ -239,14 +239,24 @@ textarea {
 
 .settings-panel input[type="range"] {
   width: 100%;
-  accent-color: #f5f2df;
+  accent-color: var(--gb-ink, #f5f2df);
+}
+
+.settings-panel select {
+  width: 100%;
+  color: var(--gb-sidebar-text, #fff);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 18%, transparent);
+  border-radius: 8px;
+  padding: 7px 8px;
+  outline: 0;
 }
 
 .nav-hints {
   display: grid;
   gap: 5px;
   margin-top: 18px;
-  color: rgba(255, 255, 255, 0.52);
+  color: var(--gb-subtle-text, rgba(255, 255, 255, 0.52));
   font-size: 11px;
   line-height: 1.25;
 }

@@ -4,6 +4,7 @@ import "./styles.css";
 
 type Tool = "select" | "text" | "draw" | "erase" | "pan" | "shape";
 type ShapeKind = "line" | "arrow" | "ellipse" | "rect" | "triangle" | "curve";
+type ThemeMode = "dark" | "light";
 
 type Point = {
   x: number;
@@ -19,6 +20,7 @@ type Viewport = {
 };
 
 type Settings = {
+  themeMode: ThemeMode;
   smartSnapEnabled: boolean;
   eraserMode: "stroke";
   chalkTexture: boolean;
@@ -27,14 +29,30 @@ type Settings = {
   angleSnapEnabled: boolean;
   angleSnapIncrementDegrees: number;
   angleSnapThresholdDegrees: number;
+  rotationSnapEnabled: boolean;
+  rotationSnapIncrementDegrees: number;
+};
+
+type RotationOrigin = {
+  x: number;
+  y: number;
+  mode: "center" | "start" | "custom";
 };
 
 type BaseObject = {
   id: string;
   color: string;
+  rotation?: number;
+  origin?: RotationOrigin;
   opacity: number;
   createdAt: number;
   updatedAt?: number;
+  rawStartPoint?: Point;
+  rawEndPoint?: Point;
+  rawPoints?: Point[];
+  sourceStrokeId?: string;
+  sourceStartPoint?: Point;
+  sourceEndPoint?: Point;
 };
 
 type TextObject = BaseObject & {
@@ -93,7 +111,7 @@ type Interaction =
   | { type: "erase"; pointerId: number; erasedIds: Set<string>; before: BoardObject[]; cursor: Point; deleteText: boolean }
   | { type: "move"; pointerId: number; id: string; start: Point; objectStart: BoardObject; before: BoardObject[] }
   | { type: "resize"; pointerId: number; id: string; handle: string; start: Point; objectStart: BoardObject; before: BoardObject[] }
-  | { type: "rotate"; pointerId: number; id: string; center: Point; startAngle: number; objectStart: BoardObject; before: BoardObject[] };
+  | { type: "rotate"; pointerId: number; id: string; origin: Point; initialPointerAngle: number; objectStart: BoardObject; before: BoardObject[] };
 
 type EditorState = {
   id: string;
@@ -109,12 +127,36 @@ type PendingSnap = {
 
 const STORAGE_KEY = "ghostboard.state.v1";
 const EMPTY_INTERACTION: Interaction = { type: "none" };
-const CHALK = "rgba(248, 248, 238, 0.94)";
+const DEFAULT_INK = "defaultInk";
 const MIN_SCALE = 0.18;
 const MAX_SCALE = 5;
 const HIT_TOLERANCE = 12;
 const DEFAULT_TEXT_LINE_HEIGHT = 1.16;
 const TEXT_FONT_FAMILY = "\"Segoe Print\", \"Comic Sans MS\", \"Bradley Hand ITC\", cursive";
+const THEME = {
+  dark: {
+    background: "#000000",
+    ink: "#f5f5f5",
+    selection: "rgba(255,255,255,0.35)",
+    handle: "rgba(255,255,255,0.65)",
+    sidebarBg: "rgba(20,20,20,0.85)",
+    sidebarText: "rgba(255,255,255,0.92)",
+    subtleText: "rgba(255,255,255,0.58)",
+    panelBg: "rgba(255,255,255,0.055)",
+    hoverBg: "rgba(255,255,255,0.08)",
+  },
+  light: {
+    background: "#f6f3ea",
+    ink: "#171717",
+    selection: "rgba(0,0,0,0.28)",
+    handle: "rgba(0,0,0,0.55)",
+    sidebarBg: "rgba(255,255,255,0.88)",
+    sidebarText: "rgba(15,15,15,0.92)",
+    subtleText: "rgba(15,15,15,0.58)",
+    panelBg: "rgba(0,0,0,0.045)",
+    hoverBg: "rgba(0,0,0,0.06)",
+  },
+} as const;
 
 const DEFAULT_STATE: BoardState = {
   objects: [],
@@ -122,6 +164,7 @@ const DEFAULT_STATE: BoardState = {
   currentTool: "text",
   viewport: { scale: 1, offsetX: 0, offsetY: 0 },
   settings: {
+    themeMode: "dark",
     smartSnapEnabled: true,
     eraserMode: "stroke",
     chalkTexture: true,
@@ -130,6 +173,8 @@ const DEFAULT_STATE: BoardState = {
     angleSnapEnabled: true,
     angleSnapIncrementDegrees: 45,
     angleSnapThresholdDegrees: 8,
+    rotationSnapEnabled: false,
+    rotationSnapIncrementDegrees: 15,
   },
 };
 
@@ -405,7 +450,7 @@ function Ghostboard() {
       text: "",
       fontSize: boardRef.current.settings.defaultFontSize,
       lineHeight: DEFAULT_TEXT_LINE_HEIGHT,
-      color: CHALK,
+      color: DEFAULT_INK,
       opacity: 0.96,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -516,12 +561,13 @@ function Ghostboard() {
       commitEditor();
       canvas.setPointerCapture(event.pointerId);
       if (handle === "rotate") {
+        const origin = objectRotationOrigin(selectedObject);
         interactionRef.current = {
           type: "rotate",
           pointerId: event.pointerId,
           id: selectedObject.id,
-          center: objectCenter(selectedObject),
-          startAngle: Math.atan2(world.y - objectCenter(selectedObject).y, world.x - objectCenter(selectedObject).x),
+          origin,
+          initialPointerAngle: angleBetween(origin, world),
           objectStart: cloneObject(selectedObject),
           before: cloneObjects(state.objects),
         };
@@ -618,9 +664,14 @@ function Ghostboard() {
 
     if (interaction.type === "rotate" && interaction.pointerId === event.pointerId) {
       const object = boardRef.current.objects.find((item) => item.id === interaction.id);
-      if (!object || object.type !== "text") return;
-      const angle = Math.atan2(world.y - interaction.center.y, world.x - interaction.center.x);
-      object.rotation = normalizeAngle((interaction.objectStart as TextObject).rotation + angle - interaction.startAngle);
+      if (!object) return;
+      const angle = angleBetween(interaction.origin, world);
+      let rotation = (interaction.objectStart.rotation ?? 0) + angle - interaction.initialPointerAngle;
+      const settings = boardRef.current.settings;
+      if (event.shiftKey || settings.rotationSnapEnabled) {
+        rotation = snapAngle(rotation, settings.rotationSnapIncrementDegrees || 15);
+      }
+      object.rotation = normalizeAngle(rotation);
       object.updatedAt = Date.now();
       save();
       requestRender();
@@ -681,6 +732,10 @@ function Ghostboard() {
         const before = cloneObjects(current);
         recognized.id = strokeId;
         recognized.createdAt = target.createdAt;
+        recognized.sourceStrokeId = strokeId;
+        recognized.rawStartPoint = target.rawStartPoint ?? points[0];
+        recognized.rawEndPoint = target.rawEndPoint ?? points[points.length - 1];
+        recognized.rawPoints = target.rawPoints ?? points;
         boardRef.current.objects = current.map((object) => object.id === strokeId ? recognized : object);
         boardRef.current.selectedIds = [strokeId];
         pushHistory(before);
@@ -753,7 +808,8 @@ function Ghostboard() {
     const state = boardRef.current;
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
-    ctx.fillStyle = "#000";
+    const theme = currentTheme(state.settings);
+    ctx.fillStyle = theme.background;
     ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
     ctx.save();
     ctx.translate(state.viewport.offsetX, state.viewport.offsetY);
@@ -767,7 +823,7 @@ function Ghostboard() {
 
     const drawing = interactionRef.current.type === "draw" ? interactionRef.current.points : null;
     if (drawing && drawing.length > 1) {
-      renderStrokePath(ctx, drawing, 7, CHALK, 0.86, true, "preview");
+      renderStrokePath(ctx, drawing, 7, resolveInk(DEFAULT_INK, state.settings), 0.86, true, "preview");
     }
 
     if (interactionRef.current.type === "erase") {
@@ -776,7 +832,7 @@ function Ghostboard() {
 
     const selected = state.objects.find((object) => object.id === state.selectedIds[0]);
     if (selected && activeEditorId !== selected.id) {
-      renderSelection(ctx, selected);
+      renderSelection(ctx, selected, state.settings);
     }
     ctx.restore();
   }
@@ -784,8 +840,24 @@ function Ghostboard() {
   const editorObject = editor ? boardRef.current.objects.find((object) => object.id === editor.id && object.type === "text") as TextObject | undefined : undefined;
   const editorStyle = editorObject ? makeEditorStyle(editorObject, boardRef.current.viewport) : undefined;
 
+  const theme = currentTheme(boardRef.current.settings);
   return (
-    <main className="ghostboard" data-tool={boardRef.current.currentTool}>
+    <main
+      className="ghostboard"
+      data-tool={boardRef.current.currentTool}
+      data-theme={boardRef.current.settings.themeMode}
+      style={{
+        "--gb-bg": theme.background,
+        "--gb-ink": theme.ink,
+        "--gb-selection": theme.selection,
+        "--gb-handle": theme.handle,
+        "--gb-sidebar-bg": theme.sidebarBg,
+        "--gb-sidebar-text": theme.sidebarText,
+        "--gb-subtle-text": theme.subtleText,
+        "--gb-panel-bg": theme.panelBg,
+        "--gb-hover-bg": theme.hoverBg,
+      } as React.CSSProperties}
+    >
       <canvas
         ref={canvasRef}
         className="board-canvas"
@@ -848,6 +920,21 @@ function Ghostboard() {
 
         {settingsOpen && (
           <div className="settings-panel">
+            <label>
+              Theme
+              <select
+                value={boardRef.current.settings.themeMode}
+                onChange={(event) => {
+                  boardRef.current.settings.themeMode = event.target.value as ThemeMode;
+                  save();
+                  requestRender();
+                  forceUpdate();
+                }}
+              >
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+              </select>
+            </label>
             <label>
               <input
                 type="checkbox"
@@ -944,6 +1031,33 @@ function Ghostboard() {
                 }}
               />
             </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={boardRef.current.settings.rotationSnapEnabled}
+                onChange={(event) => {
+                  boardRef.current.settings.rotationSnapEnabled = event.target.checked;
+                  save();
+                  forceUpdate();
+                }}
+              />
+              Rotation snap
+            </label>
+            <label>
+              Rotate increment {boardRef.current.settings.rotationSnapIncrementDegrees} deg
+              <input
+                type="range"
+                min="5"
+                max="90"
+                step="5"
+                value={boardRef.current.settings.rotationSnapIncrementDegrees}
+                onChange={(event) => {
+                  boardRef.current.settings.rotationSnapIncrementDegrees = Number(event.target.value);
+                  save();
+                  forceUpdate();
+                }}
+              />
+            </label>
           </div>
         )}
 
@@ -962,9 +1076,11 @@ function renderObject(ctx: CanvasRenderingContext2D, object: BoardObject, settin
   if (object.type === "text") {
     renderText(ctx, object, settings);
   } else if (object.type === "stroke") {
-    renderStrokePath(ctx, object.points, object.size, object.color, object.opacity, settings.chalkTexture, object.id);
+    renderWithObjectRotation(ctx, object, () => {
+      renderStrokePath(ctx, object.points, object.size, resolveInk(object.color, settings), object.opacity, settings.chalkTexture, object.id);
+    });
   } else {
-    renderShape(ctx, object, settings);
+    renderWithObjectRotation(ctx, object, () => renderShape(ctx, object, settings));
   }
 }
 
@@ -974,8 +1090,9 @@ function renderText(ctx: CanvasRenderingContext2D, object: TextObject, settings:
   ctx.translate(object.x, object.y);
   ctx.rotate(object.rotation);
   ctx.globalAlpha = object.opacity;
-  ctx.fillStyle = object.color;
-  ctx.shadowColor = "rgba(255,255,255,0.24)";
+  const ink = resolveInk(object.color, settings);
+  ctx.fillStyle = ink;
+  ctx.shadowColor = settings.themeMode === "light" ? "rgba(0,0,0,0.12)" : "rgba(255,255,255,0.24)";
   ctx.shadowBlur = settings.chalkTexture ? 5 : 0;
   ctx.font = `${object.fontSize}px ${TEXT_FONT_FAMILY}`;
   ctx.textBaseline = "top";
@@ -1048,7 +1165,7 @@ function drawPath(ctx: CanvasRenderingContext2D, points: Point[], jitter: number
 
 function renderShape(ctx: CanvasRenderingContext2D, object: ShapeObject, settings: Settings) {
   const points = shapeToStrokePoints(object);
-  renderStrokePath(ctx, points, object.size, object.color, object.opacity, settings.chalkTexture, object.id);
+  renderStrokePath(ctx, points, object.size, resolveInk(object.color, settings), object.opacity, settings.chalkTexture, object.id);
 }
 
 function shapeToStrokePoints(object: ShapeObject): Point[] {
@@ -1076,42 +1193,69 @@ function shapeToStrokePoints(object: ShapeObject): Point[] {
   return [...geometry.points, geometry.points[0]];
 }
 
-function renderSelection(ctx: CanvasRenderingContext2D, object: BoardObject) {
+function renderSelection(ctx: CanvasRenderingContext2D, object: BoardObject, settings: Settings) {
   const box = objectBounds(object);
   const handles = selectionHandles(object);
+  const origin = objectRotationOrigin(object);
+  const rotation = object.rotation ?? 0;
+  const scale = currentScale(ctx);
   ctx.save();
-  ctx.strokeStyle = "rgba(255,255,255,0.72)";
-  ctx.lineWidth = 1.2 / currentScale(ctx);
-  ctx.setLineDash([7 / currentScale(ctx), 6 / currentScale(ctx)]);
+  ctx.strokeStyle = currentTheme(settings).handle;
+  ctx.lineWidth = 1.2 / scale;
+  ctx.setLineDash([7 / scale, 6 / scale]);
 
   if (object.type === "text") {
     ctx.translate(object.x, object.y);
-    ctx.rotate(object.rotation);
+    ctx.rotate(object.rotation ?? 0);
     ctx.strokeRect(0, 0, object.width, object.height);
     ctx.setLineDash([]);
-    ctx.fillStyle = "#000";
-    ctx.strokeStyle = "rgba(255,255,255,0.88)";
+    ctx.fillStyle = currentTheme(settings).background;
+    ctx.strokeStyle = currentTheme(settings).handle;
     for (const handle of handles) {
-      const local = worldToLocal(handle.point, object);
+      const local = worldToLocalText(handle.point, object);
       if (handle.name === "rotate") {
         ctx.beginPath();
-        ctx.arc(local.x, local.y, 7 / currentScale(ctx), 0, Math.PI * 2);
+        ctx.arc(local.x, local.y, 7 / scale, 0, Math.PI * 2);
         ctx.stroke();
       } else {
-        ctx.fillRect(local.x - 5 / currentScale(ctx), local.y - 5 / currentScale(ctx), 10 / currentScale(ctx), 10 / currentScale(ctx));
-        ctx.strokeRect(local.x - 5 / currentScale(ctx), local.y - 5 / currentScale(ctx), 10 / currentScale(ctx), 10 / currentScale(ctx));
+        ctx.fillRect(local.x - 5 / scale, local.y - 5 / scale, 10 / scale, 10 / scale);
+        ctx.strokeRect(local.x - 5 / scale, local.y - 5 / scale, 10 / scale, 10 / scale);
       }
     }
   } else {
+    ctx.translate(origin.x, origin.y);
+    ctx.rotate(rotation);
+    ctx.translate(-origin.x, -origin.y);
     ctx.strokeRect(box.x, box.y, box.width, box.height);
+    ctx.setLineDash([]);
+    ctx.fillStyle = currentTheme(settings).background;
+    ctx.strokeStyle = currentTheme(settings).handle;
+    for (const handle of handles) {
+      const local = inverseRotatePoint(handle.point, origin, rotation);
+      if (handle.name === "rotate") {
+        ctx.beginPath();
+        ctx.arc(local.x, local.y, 7 / scale, 0, Math.PI * 2);
+        ctx.stroke();
+      } else {
+        ctx.fillRect(local.x - 4 / scale, local.y - 4 / scale, 8 / scale, 8 / scale);
+        ctx.strokeRect(local.x - 4 / scale, local.y - 4 / scale, 8 / scale, 8 / scale);
+      }
+    }
+    if (object.origin?.mode === "start") {
+      ctx.beginPath();
+      ctx.arc(origin.x, origin.y, 4.5 / scale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
   }
   ctx.restore();
 }
 
 function renderEraserCursor(ctx: CanvasRenderingContext2D, point: Point, radius: number) {
+  const theme = currentTheme(boardRefSafe().settings);
   ctx.save();
-  ctx.strokeStyle = "rgba(255,255,255,0.48)";
-  ctx.fillStyle = "rgba(255,255,255,0.05)";
+  ctx.strokeStyle = theme.handle;
+  ctx.fillStyle = theme.selection;
   ctx.lineWidth = 1.2 / currentScale(ctx);
   ctx.beginPath();
   ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
@@ -1131,21 +1275,35 @@ function makeStroke(points: Point[]): StrokeObject {
     points,
     size: 7,
     bbox: pointsBounds(points),
-    color: CHALK,
+    rotation: 0,
+    origin: centerOrigin(pointsBounds(points)),
+    rawStartPoint: points[0],
+    rawEndPoint: points[points.length - 1],
+    rawPoints: points,
+    color: DEFAULT_INK,
     opacity: 0.92,
     createdAt: Date.now(),
   };
 }
 
-function makeShape(shapeType: ShapeKind, geometry: ShapeGeometry): ShapeObject {
+function makeShape(shapeType: ShapeKind, geometry: ShapeGeometry, sourcePoints?: Point[]): ShapeObject {
+  const sourceStartPoint = sourcePoints?.[0];
+  const sourceEndPoint = sourcePoints?.[sourcePoints.length - 1];
+  const bbox = shapeBounds(shapeType, geometry);
+  const startAnchored = shapeType === "line" || shapeType === "arrow" || shapeType === "curve";
   return {
     id: createId(),
     type: "shape",
     shapeType,
     geometry,
     size: 7,
-    bbox: shapeBounds(shapeType, geometry),
-    color: CHALK,
+    bbox,
+    rotation: 0,
+    origin: startAnchored && sourceStartPoint ? { ...sourceStartPoint, mode: "start" } : centerOrigin(bbox),
+    sourceStartPoint,
+    sourceEndPoint,
+    rawPoints: sourcePoints,
+    color: DEFAULT_INK,
     opacity: 0.92,
     createdAt: Date.now(),
   };
@@ -1164,11 +1322,11 @@ function recognizeShape(points: Point[], settings: Settings, forceAngleSnap = fa
   if (arrow) {
     const snapped = maybeSnapLineAngle(arrow.start, arrow.end, settings, forceAngleSnap);
     arrow.end = snapped;
-    return makeShape("arrow", arrow);
+    return makeShape("arrow", arrow, points);
   }
 
   if (!closed && straightRatio > 0.78 && lineError < Math.max(10, length * 0.055)) {
-    return makeShape("line", { start, end: maybeSnapLineAngle(start, end, settings, forceAngleSnap) });
+    return makeShape("line", { start, end: maybeSnapLineAngle(start, end, settings, forceAngleSnap) }, points);
   }
 
   const simplified = simplifyRdp(points, Math.max(10, Math.min(bounds.width, bounds.height) * 0.08));
@@ -1176,11 +1334,11 @@ function recognizeShape(points: Point[], settings: Settings, forceAngleSnap = fa
 
   if (closed && polygon.length >= 3) {
     if (polygon.length <= 6 && rightAngleScore(polygon) > 0.52) {
-      return makeShape("rect", { points: rectPoints(bounds) });
+      return makeShape("rect", { points: rectPoints(bounds) }, points);
     }
 
     if (polygon.length <= 4) {
-      return makeShape("triangle", { points: bestTriangle(polygon, bounds) });
+      return makeShape("triangle", { points: bestTriangle(polygon, bounds) }, points);
     }
 
     if (isEllipseLike(points, bounds, length)) {
@@ -1188,7 +1346,7 @@ function recognizeShape(points: Point[], settings: Settings, forceAngleSnap = fa
         center: { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 },
         rx: Math.max(bounds.width / 2, 4),
         ry: Math.max(bounds.height / 2, 4),
-      });
+      }, points);
     }
   }
 
@@ -1197,7 +1355,7 @@ function recognizeShape(points: Point[], settings: Settings, forceAngleSnap = fa
       center: { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 },
       rx: Math.max(bounds.width / 2, 4),
       ry: Math.max(bounds.height / 2, 4),
-    });
+    }, points);
   }
 
   const curve = recognizeCurve(points, bounds, length);
@@ -1268,7 +1426,7 @@ function recognizeCurve(points: Point[], bounds: Rect, length: number) {
   const error = averageCurveError(points, fitted);
   const tolerance = Math.max(10, Math.min(bounds.width + bounds.height, 500) * 0.055);
   if (error > tolerance) return null;
-  return makeShape("curve", { points: fitted });
+  return makeShape("curve", { points: fitted }, points);
 }
 
 function isEllipseLike(points: Point[], bounds: Rect, length: number) {
@@ -1317,7 +1475,7 @@ function hitTest(point: Point) {
   for (let i = objects.length - 1; i >= 0; i -= 1) {
     const object = objects[i];
     if (object.type === "text") {
-      const local = worldToLocal(point, object);
+      const local = worldToLocalText(point, object);
       if (local.x >= 0 && local.y >= 0 && local.x <= object.width && local.y <= object.height) return object;
     } else if (hitObjectStroke(object, point, HIT_TOLERANCE / boardRefSafe().viewport.scale)) {
       return object;
@@ -1328,13 +1486,14 @@ function hitTest(point: Point) {
 
 function hitObjectStroke(object: BoardObject, point: Point, tolerance: number) {
   if (object.type === "text") {
-    const local = worldToLocal(point, object);
+    const local = worldToLocalText(point, object);
     return local.x >= -tolerance && local.y >= -tolerance && local.x <= object.width + tolerance && local.y <= object.height + tolerance;
   }
 
+  const localPoint = inverseRotatePoint(point, objectRotationOrigin(object), object.rotation ?? 0);
   const points = object.type === "stroke" ? object.points : shapeToStrokePoints(object);
   for (let i = 1; i < points.length; i += 1) {
-    if (pointToSegmentDistance(point, points[i - 1], points[i]) <= tolerance + ("size" in object ? object.size / 2 : 4)) return true;
+    if (pointToSegmentDistance(localPoint, points[i - 1], points[i]) <= tolerance + ("size" in object ? object.size / 2 : 4)) return true;
   }
   return false;
 }
@@ -1351,13 +1510,24 @@ function hitSelectionHandle(point: Point) {
 }
 
 function selectionHandles(object: BoardObject) {
-  if (object.type !== "text") return [];
+  if (object.type !== "text") {
+    const box = objectBounds(object);
+    const origin = objectRotationOrigin(object);
+    const rotation = object.rotation ?? 0;
+    return [
+      { name: "nw", point: rotatePoint({ x: box.x, y: box.y }, origin, rotation) },
+      { name: "ne", point: rotatePoint({ x: box.x + box.width, y: box.y }, origin, rotation) },
+      { name: "se", point: rotatePoint({ x: box.x + box.width, y: box.y + box.height }, origin, rotation) },
+      { name: "sw", point: rotatePoint({ x: box.x, y: box.y + box.height }, origin, rotation) },
+      { name: "rotate", point: rotatePoint({ x: box.x + box.width / 2, y: box.y - Math.max(38, Math.min(70, box.height * 0.6)) }, origin, rotation) },
+    ];
+  }
   const corners = [
-    { name: "nw", point: localToWorld({ x: 0, y: 0 }, object) },
-    { name: "ne", point: localToWorld({ x: object.width, y: 0 }, object) },
-    { name: "se", point: localToWorld({ x: object.width, y: object.height }, object) },
-    { name: "sw", point: localToWorld({ x: 0, y: object.height }, object) },
-    { name: "rotate", point: localToWorld({ x: object.width / 2, y: -42 }, object) },
+    { name: "nw", point: localToWorldText({ x: 0, y: 0 }, object) },
+    { name: "ne", point: localToWorldText({ x: object.width, y: 0 }, object) },
+    { name: "se", point: localToWorldText({ x: object.width, y: object.height }, object) },
+    { name: "sw", point: localToWorldText({ x: 0, y: object.height }, object) },
+    { name: "rotate", point: localToWorldText({ x: object.width / 2, y: -42 }, object) },
   ];
   return corners;
 }
@@ -1366,13 +1536,24 @@ function applyMove(object: BoardObject, original: BoardObject, dx: number, dy: n
   if (object.type === "text" && original.type === "text") {
     object.x = original.x + dx;
     object.y = original.y + dy;
+    if (original.origin) object.origin = { ...original.origin, x: original.origin.x + dx, y: original.origin.y + dy };
     object.updatedAt = Date.now();
   } else if (object.type === "stroke" && original.type === "stroke") {
     object.points = original.points.map((point) => ({ ...point, x: point.x + dx, y: point.y + dy }));
     object.bbox = pointsBounds(object.points);
+    object.origin = moveOrigin(original.origin ?? centerOrigin(original.bbox), dx, dy);
+    object.rawStartPoint = original.rawStartPoint ? movePoint(original.rawStartPoint, dx, dy) : undefined;
+    object.rawEndPoint = original.rawEndPoint ? movePoint(original.rawEndPoint, dx, dy) : undefined;
+    object.rawPoints = original.rawPoints?.map((point) => movePoint(point, dx, dy));
   } else if (object.type === "shape" && original.type === "shape") {
     object.geometry = moveGeometry(original.geometry, dx, dy);
     object.bbox = shapeBounds(object.shapeType, object.geometry);
+    object.origin = moveOrigin(original.origin ?? centerOrigin(original.bbox), dx, dy);
+    object.sourceStartPoint = original.sourceStartPoint ? movePoint(original.sourceStartPoint, dx, dy) : undefined;
+    object.sourceEndPoint = original.sourceEndPoint ? movePoint(original.sourceEndPoint, dx, dy) : undefined;
+    object.rawStartPoint = original.rawStartPoint ? movePoint(original.rawStartPoint, dx, dy) : undefined;
+    object.rawEndPoint = original.rawEndPoint ? movePoint(original.rawEndPoint, dx, dy) : undefined;
+    object.rawPoints = original.rawPoints?.map((point) => movePoint(point, dx, dy));
   }
 }
 
@@ -1410,7 +1591,7 @@ function moveGeometry(geometry: ShapeGeometry, dx: number, dy: number): ShapeGeo
 }
 
 function objectCenter(object: BoardObject): Point {
-  if (object.type === "text") return localToWorld({ x: object.width / 2, y: object.height / 2 }, object);
+  if (object.type === "text") return localToWorldText({ x: object.width / 2, y: object.height / 2 }, object);
   const box = objectBounds(object);
   return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
 }
@@ -1418,10 +1599,10 @@ function objectCenter(object: BoardObject): Point {
 function objectBounds(object: BoardObject): Rect {
   if (object.type === "text") {
     const corners = [
-      localToWorld({ x: 0, y: 0 }, object),
-      localToWorld({ x: object.width, y: 0 }, object),
-      localToWorld({ x: object.width, y: object.height }, object),
-      localToWorld({ x: 0, y: object.height }, object),
+      localToWorldText({ x: 0, y: 0 }, object),
+      localToWorldText({ x: object.width, y: 0 }, object),
+      localToWorldText({ x: object.width, y: object.height }, object),
+      localToWorldText({ x: 0, y: object.height }, object),
     ];
     return pointsBounds(corners);
   }
@@ -1446,7 +1627,7 @@ function makeEditorStyle(object: TextObject, viewport: Viewport): React.CSSPrope
     fontSize: `${scaledFontSize}px`,
     lineHeight: `${scaledLineHeight}px`,
     fontFamily: TEXT_FONT_FAMILY,
-    transform: `rotate(${object.rotation}rad)`,
+    transform: `rotate(${object.rotation ?? 0}rad)`,
     transformOrigin: "0 0",
   };
 }
@@ -1487,9 +1668,10 @@ function loadState(): BoardState {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return cloneState(DEFAULT_STATE);
     const parsed = JSON.parse(raw) as Partial<BoardState>;
+    const objects = Array.isArray(parsed.objects) ? parsed.objects as BoardObject[] : [];
     return {
       ...cloneState(DEFAULT_STATE),
-      objects: Array.isArray(parsed.objects) ? parsed.objects as BoardObject[] : [],
+      objects: normalizeObjects(objects),
       viewport: { ...DEFAULT_STATE.viewport, ...(parsed.viewport ?? {}) },
       settings: { ...DEFAULT_STATE.settings, ...(parsed.settings ?? {}) },
       selectedIds: [],
@@ -1498,6 +1680,20 @@ function loadState(): BoardState {
   } catch {
     return cloneState(DEFAULT_STATE);
   }
+}
+
+function normalizeObjects(objects: BoardObject[]) {
+  return objects.map((object) => {
+    const next = cloneObject(object);
+    next.color = next.color || DEFAULT_INK;
+    next.rotation = next.rotation ?? 0;
+    if (!next.origin && next.type !== "text") {
+      next.origin = next.type === "shape" && (next.shapeType === "line" || next.shapeType === "arrow" || next.shapeType === "curve")
+        ? { ...(next.sourceStartPoint ?? next.rawStartPoint ?? firstGeometryPoint(next.geometry) ?? objectCenter(next)), mode: "start" }
+        : centerOrigin(next.bbox);
+    }
+    return next;
+  });
 }
 
 function cloneState(state: BoardState): BoardState {
@@ -1540,20 +1736,98 @@ function worldToScreen(point: Point, viewport: Viewport): Point {
   };
 }
 
-function localToWorld(point: Point, object: TextObject): Point {
-  const cos = Math.cos(object.rotation);
-  const sin = Math.sin(object.rotation);
+function currentTheme(settings: Settings) {
+  return THEME[settings.themeMode ?? "dark"];
+}
+
+function resolveInk(color: string, settings: Settings) {
+  if (color === DEFAULT_INK || color.includes("248, 248, 238")) return currentTheme(settings).ink;
+  return color;
+}
+
+function renderWithObjectRotation(ctx: CanvasRenderingContext2D, object: BoardObject, renderGeometry: () => void) {
+  const rotation = object.rotation ?? 0;
+  if (!rotation) {
+    renderGeometry();
+    return;
+  }
+  const origin = objectRotationOrigin(object);
+  ctx.save();
+  ctx.translate(origin.x, origin.y);
+  ctx.rotate(rotation);
+  ctx.translate(-origin.x, -origin.y);
+  renderGeometry();
+  ctx.restore();
+}
+
+function objectRotationOrigin(object: BoardObject): RotationOrigin {
+  if (object.origin) return object.origin;
+  if (object.type === "shape" && (object.shapeType === "line" || object.shapeType === "arrow" || object.shapeType === "curve")) {
+    const start = object.sourceStartPoint ?? object.rawStartPoint ?? firstGeometryPoint(object.geometry);
+    if (start) return { x: start.x, y: start.y, mode: "start" };
+  }
+  if (object.type === "text") return { x: object.x + object.width / 2, y: object.y + object.height / 2, mode: "center" };
+  return centerOrigin(objectBounds(object));
+}
+
+function firstGeometryPoint(geometry: ShapeGeometry): Point | null {
+  if ("start" in geometry && "end" in geometry) return geometry.start;
+  if ("center" in geometry) return geometry.center;
+  return geometry.points[0] ?? null;
+}
+
+function centerOrigin(rect: Rect): RotationOrigin {
+  return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, mode: "center" };
+}
+
+function movePoint(point: Point, dx: number, dy: number): Point {
+  return { ...point, x: point.x + dx, y: point.y + dy };
+}
+
+function moveOrigin(origin: RotationOrigin, dx: number, dy: number): RotationOrigin {
+  return { ...origin, x: origin.x + dx, y: origin.y + dy };
+}
+
+function rotatePoint(point: Point, origin: Point, rotation: number): Point {
+  const dx = point.x - origin.x;
+  const dy = point.y - origin.y;
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+  return {
+    x: origin.x + dx * cos - dy * sin,
+    y: origin.y + dx * sin + dy * cos,
+  };
+}
+
+function inverseRotatePoint(point: Point, origin: Point, rotation: number): Point {
+  return rotatePoint(point, origin, -rotation);
+}
+
+function angleBetween(origin: Point, point: Point) {
+  return Math.atan2(point.y - origin.y, point.x - origin.x);
+}
+
+function snapAngle(angle: number, incrementDegrees: number) {
+  const increment = degreesToRadians(Math.max(1, incrementDegrees));
+  return Math.round(angle / increment) * increment;
+}
+
+function localToWorldText(point: Point, object: TextObject): Point {
+  const rotation = object.rotation ?? 0;
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
   return {
     x: object.x + point.x * cos - point.y * sin,
     y: object.y + point.x * sin + point.y * cos,
   };
 }
 
-function worldToLocal(point: Point, object: TextObject): Point {
+function worldToLocalText(point: Point, object: TextObject): Point {
   const dx = point.x - object.x;
   const dy = point.y - object.y;
-  const cos = Math.cos(-object.rotation);
-  const sin = Math.sin(-object.rotation);
+  const rotation = object.rotation ?? 0;
+  const cos = Math.cos(-rotation);
+  const sin = Math.sin(-rotation);
   return {
     x: dx * cos - dy * sin,
     y: dx * sin + dy * cos,
