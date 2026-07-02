@@ -130,6 +130,7 @@ type PendingSnap = {
 
 const STORAGE_KEY = "ghostboard.state.v1";
 const CLIPBOARD_PREFIX = "greyboard/objects:";
+const CLIPBOARD_HTML_PREFIX = "greyboard-data:";
 const EMPTY_INTERACTION: Interaction = { type: "none" };
 const DEFAULT_INK = "defaultInk";
 const MIN_SCALE = 0.18;
@@ -208,11 +209,13 @@ function Ghostboard() {
   const pendingSnapRef = useRef<PendingSnap | null>(null);
   const activeEditorRef = useRef<EditorState | null>(null);
   const toolToggleClickRef = useRef<{ button: number; time: number; point: Point } | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [inputGuideMode, setInputGuideMode] = useState<InputGuideMode>("mouse");
+  const [toast, setToast] = useState("");
   const [tick, setTick] = useState(0);
   runtimeBoardState = boardRef.current;
   activeEditorRef.current = editor;
@@ -427,26 +430,45 @@ function Ghostboard() {
     setObjects(before.filter((object) => !ids.has(object.id)), before);
   }
 
+  function showToast(message: string) {
+    setToast(message);
+    if (toastTimerRef.current != null) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => {
+      setToast("");
+      toastTimerRef.current = null;
+    }, 1300);
+  }
+
   async function copySelectionToClipboard() {
     commitEditor();
     const selected = boardRef.current.objects.filter((object) => boardRef.current.selectedIds.includes(object.id));
     if (!selected.length) return;
     const payload = `${CLIPBOARD_PREFIX}${JSON.stringify({ objects: selected })}`;
     try {
-      const imageBlob = renderObjectsToPng(selected, boardRef.current.settings);
-      if ("ClipboardItem" in window && imageBlob) {
-        await navigator.clipboard.write([
+      const image = renderObjectsToPng(selected, boardRef.current.settings);
+      if ("ClipboardItem" in window && image) {
+        const htmlPayload = `<!--${CLIPBOARD_HTML_PREFIX}${window.btoa(unescape(encodeURIComponent(payload)))}--><img src="${image.dataUrl}" alt="Greyboard selection">`;
+        await withTimeout(navigator.clipboard.write([
           new ClipboardItem({
-            "text/plain": new Blob([payload], { type: "text/plain" }),
-            "image/png": imageBlob,
+            "text/html": new Blob([htmlPayload], { type: "text/html" }),
+            "image/png": image.blob,
           }),
-        ]);
+        ]), 900);
+        showToast("Copied to clipboard");
       } else {
         await navigator.clipboard.writeText(payload);
+        showToast("Copied to clipboard");
       }
     } catch {
       try {
-        await navigator.clipboard.writeText(payload);
+        const image = renderObjectsToPng(selected, boardRef.current.settings);
+        if ("ClipboardItem" in window && image) {
+          await withTimeout(navigator.clipboard.write([new ClipboardItem({ "image/png": image.blob })]), 900);
+          showToast("Copied to clipboard");
+        } else {
+          await navigator.clipboard.writeText(payload);
+          showToast("Copied to clipboard");
+        }
       } catch {
         // Clipboard access can be denied outside trusted browser gestures.
       }
@@ -457,7 +479,17 @@ function Ghostboard() {
     commitEditor();
     let text = "";
     try {
-      text = await navigator.clipboard.readText();
+      if ("read" in navigator.clipboard) {
+        const items = await navigator.clipboard.read();
+        for (const item of items) {
+          if (item.types.includes("text/html")) {
+            const html = await (await item.getType("text/html")).text();
+            text = extractGreyboardPayloadFromHtml(html);
+            break;
+          }
+        }
+      }
+      if (!text) text = await navigator.clipboard.readText();
     } catch {
       return;
     }
@@ -479,6 +511,7 @@ function Ghostboard() {
       save();
       requestRender();
       forceUpdate();
+      showToast("Pasted");
     } catch {
       return;
     }
@@ -1053,6 +1086,8 @@ function Ghostboard() {
         />
       )}
 
+      {toast && <div className="toast" role="status">{toast}</div>}
+
       <button className="menu-button" type="button" aria-label="Toggle tools" onClick={() => setSidebarOpen((open) => !open)}>
         <span />
         <span />
@@ -1511,7 +1546,8 @@ function renderObjectsToPng(objects: BoardObject[], settings: Settings) {
   ctx.translate(padding - bounds.x, padding - bounds.y);
   for (const object of objects) renderObject(ctx, object, settings);
   ctx.restore();
-  return dataUrlToBlob(canvas.toDataURL("image/png"));
+  const dataUrl = canvas.toDataURL("image/png");
+  return { blob: dataUrlToBlob(dataUrl), dataUrl };
 }
 
 function dataUrlToBlob(dataUrl: string) {
@@ -1521,6 +1557,23 @@ function dataUrlToBlob(dataUrl: string) {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
   return new Blob([bytes], { type: mime });
+}
+
+function extractGreyboardPayloadFromHtml(html: string) {
+  const match = html.match(/greyboard-data:([A-Za-z0-9+/=]+)/);
+  if (!match) return "";
+  try {
+    return decodeURIComponent(escape(window.atob(match[1])));
+  } catch {
+    return "";
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number) {
+  return Promise.race<T>([
+    promise,
+    new Promise<T>((_, reject) => window.setTimeout(() => reject(new Error("timeout")), ms)),
+  ]);
 }
 
 function renderEraserCursor(ctx: CanvasRenderingContext2D, point: Point, radius: number) {
