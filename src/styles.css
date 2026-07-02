@@ -1,0 +1,262 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, "Segoe UI", system-ui, sans-serif;
+  background: #000;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #000;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+.ghostboard {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: #000;
+}
+
+.board-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  touch-action: none;
+  cursor: text;
+  background: #000;
+}
+
+.ghostboard[data-tool="select"] .board-canvas {
+  cursor: default;
+}
+
+.ghostboard[data-tool="draw"] .board-canvas,
+.ghostboard[data-tool="shape"] .board-canvas {
+  cursor: crosshair;
+}
+
+.ghostboard[data-tool="erase"] .board-canvas {
+  cursor: cell;
+}
+
+.ghostboard[data-tool="pan"] .board-canvas {
+  cursor: grab;
+}
+
+.text-editor {
+  position: absolute;
+  z-index: 6;
+  resize: none;
+  min-width: 300px;
+  min-height: 110px;
+  overflow: hidden;
+  padding: 0;
+  color: rgba(248, 248, 238, 0.96);
+  background: transparent;
+  border: 0;
+  outline: 0;
+  caret-color: rgba(248, 248, 238, 0.96);
+  font-family: "Segoe Print", "Comic Sans MS", "Bradley Hand ITC", cursive;
+  line-height: 1.16;
+  letter-spacing: 0;
+  text-shadow: 0 0 6px rgba(255, 255, 255, 0.2);
+  pointer-events: auto;
+  white-space: pre-wrap;
+}
+
+.text-editor::placeholder {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.menu-button {
+  position: fixed;
+  z-index: 5;
+  top: 16px;
+  left: 16px;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 7px;
+  gap: 4px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  opacity: 0.62;
+  cursor: pointer;
+}
+
+.menu-button:hover,
+.menu-button:focus-visible {
+  opacity: 1;
+  border-color: rgba(255, 255, 255, 0.18);
+  outline: 0;
+}
+
+.menu-button span {
+  display: block;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.18);
+}
+
+.sidebar {
+  position: fixed;
+  z-index: 4;
+  top: 0;
+  left: 0;
+  width: min(286px, calc(100vw - 24px));
+  height: 100vh;
+  padding: 62px 14px 16px;
+  color: rgba(255, 255, 255, 0.92);
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.92), rgba(0, 0, 0, 0.72));
+  border-right: 1px solid rgba(255, 255, 255, 0.09);
+  transform: translateX(-102%);
+  visibility: hidden;
+  pointer-events: none;
+  transition: transform 150ms ease, visibility 0s linear 150ms;
+  backdrop-filter: blur(10px);
+}
+
+.sidebar.is-open {
+  transform: translateX(0);
+  visibility: visible;
+  pointer-events: auto;
+  transition: transform 150ms ease;
+}
+
+.brand {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 18px;
+}
+
+.brand strong {
+  font-size: 18px;
+  letter-spacing: 0;
+}
+
+.brand span {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+}
+
+.tool-list {
+  display: grid;
+  gap: 6px;
+}
+
+.sidebar-tool {
+  display: grid;
+  grid-template-columns: 38px 1fr;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 46px;
+  padding: 6px;
+  color: rgba(255, 255, 255, 0.82);
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.sidebar-tool:hover,
+.sidebar-tool:focus-visible,
+.sidebar-tool.is-active {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
+  outline: 0;
+}
+
+.tool-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.94);
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.sidebar-tool strong,
+.sidebar-tool small {
+  display: block;
+}
+
+.sidebar-tool strong {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.sidebar-tool small {
+  margin-top: 2px;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 11px;
+  line-height: 1.22;
+}
+
+.settings-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.settings-panel label {
+  display: grid;
+  gap: 6px;
+}
+
+.settings-panel label:has(input[type="checkbox"]) {
+  grid-template-columns: 18px 1fr;
+  align-items: center;
+}
+
+.settings-panel input[type="range"] {
+  width: 100%;
+  accent-color: #f5f2df;
+}
+
+.nav-hints {
+  display: grid;
+  gap: 5px;
+  margin-top: 18px;
+  color: rgba(255, 255, 255, 0.52);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+@media (max-width: 620px) {
+  .menu-button {
+    top: 10px;
+    left: 10px;
+  }
+
+  .sidebar {
+    padding-top: 52px;
+  }
+}
