@@ -5,6 +5,7 @@ import "./styles.css";
 type Tool = "select" | "text" | "draw" | "erase" | "pan" | "shape";
 type ShapeKind = "line" | "arrow" | "ellipse" | "rect" | "triangle" | "curve";
 type ThemeMode = "dark" | "light";
+type InputGuideMode = "mouse" | "touchpad";
 
 type Point = {
   x: number;
@@ -209,6 +210,7 @@ function Ghostboard() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  const [inputGuideMode, setInputGuideMode] = useState<InputGuideMode>("mouse");
   const [tick, setTick] = useState(0);
   runtimeBoardState = boardRef.current;
   activeEditorRef.current = editor;
@@ -1129,17 +1131,46 @@ function Ghostboard() {
           </div>
         )}
 
-        <div className="nav-hints">
-          <span>Quick click empty space = text</span>
-          <span>Drag empty space = draw</span>
-          <span>Right-click drag = erase</span>
-          <span>Middle mouse drag = pan</span>
-          <span>Desktop: Ctrl + scroll = zoom</span>
-          <span>Mac: Control + two-finger scroll = zoom</span>
-          <span>Shift + scroll = horizontal pan</span>
-          <span>Undo / redo: Control Z and Control Y</span>
-          <span>Mac undo / redo: Command Z and Command Y</span>
-          <span>Double-click text to edit</span>
+        <div className="input-guide">
+          <div className="input-guide-toggle" role="tablist" aria-label="Input directions">
+            {(["mouse", "touchpad"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                role="tab"
+                aria-selected={inputGuideMode === mode}
+                className={inputGuideMode === mode ? "is-active" : ""}
+                onClick={() => setInputGuideMode(mode)}
+              >
+                {mode === "mouse" ? "Mouse" : "Touchpad"}
+              </button>
+            ))}
+          </div>
+
+          <div className="nav-hints">
+            {inputGuideMode === "mouse" ? (
+              <>
+                <span>Click empty space = text</span>
+                <span>Drag empty space = draw</span>
+                <span>Right-click drag = erase</span>
+                <span>Middle mouse drag = pan</span>
+                <span>Control + scroll = zoom</span>
+                <span>Shift + scroll = horizontal pan</span>
+                <span>Undo / redo: Control Z and Control Y</span>
+                <span>Double-click text to edit</span>
+              </>
+            ) : (
+              <>
+                <span>Tap empty space = text</span>
+                <span>Press and drag = draw</span>
+                <span>Two-finger drag = pan</span>
+                <span>Control + two-finger scroll = zoom</span>
+                <span>Shift + two-finger scroll = horizontal pan</span>
+                <span>Undo / redo: Control Z and Control Y</span>
+                <span>Double-tap text to edit</span>
+              </>
+            )}
+          </div>
         </div>
       </aside>
     </main>
