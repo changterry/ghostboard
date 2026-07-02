@@ -149,7 +149,7 @@ const THEME = {
     panelBg: "rgba(255,255,255,0.055)",
     hoverBg: "rgba(255,255,255,0.08)",
     accent: "#E85D04",
-    accentText: "#ffffff",
+    accentText: "#E85D04",
   },
   light: {
     background: "#f6f3ea",
@@ -162,7 +162,7 @@ const THEME = {
     panelBg: "rgba(0,0,0,0.045)",
     hoverBg: "rgba(0,0,0,0.06)",
     accent: "#E85D04",
-    accentText: "#ffffff",
+    accentText: "#E85D04",
   },
 } as const;
 
