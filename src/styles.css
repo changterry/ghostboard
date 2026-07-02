@@ -296,11 +296,28 @@ textarea {
 .settings-panel select {
   width: 100%;
   color: var(--gb-sidebar-text, #fff);
-  background: transparent;
+  background: var(--gb-bg, transparent);
   border: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 18%, transparent);
   border-radius: 8px;
   padding: 7px 8px;
   outline: 0;
+}
+
+.settings-panel select option {
+  color: var(--gb-sidebar-text, #fff);
+  background: var(--gb-bg, #000);
+}
+
+.ghostboard[data-theme="light"] .settings-panel select,
+.ghostboard[data-theme="light"] .settings-panel select option {
+  color: #171717;
+  background: #f6f3ea;
+}
+
+.ghostboard[data-theme="dark"] .settings-panel select,
+.ghostboard[data-theme="dark"] .settings-panel select option {
+  color: rgba(255, 255, 255, 0.92);
+  background: #141414;
 }
 
 .input-guide {
