@@ -6,7 +6,6 @@ type Tool = "select" | "text" | "draw" | "erase" | "pan" | "shape";
 type ShapeKind = "line" | "arrow" | "ellipse" | "rect" | "triangle" | "curve";
 type ThemeMode = "dark" | "light";
 type InputGuideMode = "mouse" | "touchpad";
-type BoardMode = "freeform" | "guidedJournal";
 
 type Point = {
   x: number;
@@ -100,7 +99,6 @@ type ShapeGeometry =
   | { points: Point[] };
 
 type BoardState = {
-  mode: BoardMode;
   objects: BoardObject[];
   selectedIds: string[];
   currentTool: Tool;
@@ -139,11 +137,6 @@ type TouchGesture = {
   initialWorldCenter: Point;
 };
 
-type FourFingerSwipe = {
-  initialCenter: Point;
-  toggled: boolean;
-};
-
 const STORAGE_KEY = "ghostboard.state.v1";
 const LOCAL_CLIPBOARD_KEY = "greyboard.clipboard.v1";
 const CLIPBOARD_PREFIX = "greyboard/objects:";
@@ -156,162 +149,7 @@ const HIT_TOLERANCE = 12;
 const CLICK_MAX_DURATION_MS = 250;
 const DRAG_THRESHOLD_PX = 5;
 const DEFAULT_TEXT_LINE_HEIGHT = 1.16;
-const DOUBLE_MIDDLE_CLICK_MS = 350;
-const FOUR_FINGER_SWIPE_DOWN_PX = 58;
 const TEXT_FONT_FAMILY = "\"Segoe Print\", \"Comic Sans MS\", \"Bradley Hand ITC\", cursive";
-const JOURNAL_SECTIONS = [
-  {
-    title: "Narrative",
-    questions: [
-      "Why do coins go up?",
-      "Attention",
-      "Is this new, fresh, memeable, original, is it something that can be talked about?",
-      "Why would someone care about this coin in order to send it high?",
-      "Is something that would get a lot of future attention, why would people have a reason to care about this coin?",
-      "Can I explain this narrative and they will understand it?",
-      "News, viral narratives outside CT, trends on tiktok, famous person, meme, ai project",
-      "Stay away from random narrative, ask yourself has this been done before, is this something nobody is gonna care about, will this have connection to anything happening in the real world and why?",
-      "If you're following volume, you might be late",
-      "How do you evaluate narrative strength?",
-      "First coin about a given theme/concept is gonna go pretty high.",
-      "If a coin goes very high, and gets a lot of attention, people make derivative of that coin, coins that are trying to take some of the attention that the main coin is getting",
-      "Attention",
-      "Who is the audience before this coin?",
-      "Is this something only degen would care about, or would this be something a normie would care about?",
-      "Is there a dev or a team behind it?",
-    ],
-  },
-  {
-    title: "Supply",
-    questions: [
-      "Who owns my coin?",
-      "What is their objective?",
-      "Is it dump, all memecoins go 0 eventually -> your job is to make money from these.",
-      "How can I be early?",
-      "What do they plan to do?",
-      "Is it hold, dump, rotate, or actually bagwork this, and have conviction?",
-      "Wallet tracker -> track who is early to narratives, who is late",
-      "Don't just copy trade what wallets that you see, can use wallets to your advantage to buy coins",
-      "Bundle",
-      "1 person or multiple owns a lot of the supply in multiple different wallets, control how high the coin can",
-      "Need a bundle for it to go up",
-      "Good bundles",
-      "Bad bundles",
-      "Eyeballing it based on experience",
-    ],
-  },
-  {
-    title: "Planning out your trade",
-    questions: [
-      "Comparison to previous tokens that have ran in the past.",
-      "How high have similar coins ran in this narrative?",
-      "Gives you as ceiling and a target before you enter",
-      "Use that to determine how high you think the current coin that you're looking at can",
-      "Market appetite - does the market care about this narrative?",
-      "Meta, what is the theme of coins being?",
-      "Are other coins in this category getting volume?",
-      "Volume - are coins getting attention/are a lot of people buying and selling and trading this kind of coin.",
-      "See how fast a coin is moving up or down.",
-      "Vol = amount of $ total buys + $ total sell",
-      "Entry",
-      "Plan out your exit",
-      "Plan how long you're gonna hold",
-      "Risk manage",
-    ],
-  },
-  {
-    title: "Narrative lifecycle",
-    questions: [
-      "Waves 1-3 -> pump and dump -> pump -> positioning",
-      "Most coins -> just pump once and die, for example a tweet",
-      "How do you know when a coin is dying vs when it's still alive during a dip?",
-      "Is the dev/team still active/tweeting/discord/pushing the account, building the tech?",
-      "Are they still tweeting, still building?",
-      "Is the community active?",
-      "Or maybe the whole meta died?",
-      "Is there potential catalysts coming?",
-      "Something that can reignite attention?",
-      "Think of trading as a probability game.",
-      "Define your risk.",
-      "Tony has a 3/10 winrate but on the times that he follows his strategy, the 3 times that he is right > the times that he loses",
-      "Think in terms of long term in terms of many trades over the span of 10 trades, 100 trades, 12000 trades, stacking up your port slow, don't just wait for one play to make you rich",
-    ],
-  },
-  {
-    title: "Edge",
-    questions: [
-      "Crypto is pvp, positioning, timing, narrative",
-      "You have to buy coins where you have an edge -> meaning you know something or check something that most other buyers didn't",
-      "Information -> maybe you have information that the rest of the market didn't",
-      "Analysis -> are you better at analysing a coin?",
-      "See a narrative before CT catches",
-      "Timing",
-      "Understanding lifecycle",
-    ],
-  },
-  {
-    title: "Enter",
-    questions: [
-      "Sizing",
-      "Risk an amount where you can lose 4 times in a row and be fine",
-      "3 sol - 200 dollars",
-      "20 dollars per trade MAX",
-      "When do I buy?",
-      "Early before attention peaks, or see a narrative",
-      "Dip between a wave",
-      "Never chase green candles.",
-      "If a coin is pumping",
-      "Conviction tiers",
-      "A - 10",
-      "B",
-      "C",
-    ],
-  },
-  {
-    title: "How do you get out",
-    questions: [
-      "Buy low, sell high",
-      "Before you take a trade, have to know three things",
-      "Your thesis",
-      "Your ceiling",
-      "Sell trigger",
-      "Invalidation, price or narrative",
-      "Sell in partials profit, taking profits on the way up",
-      "Take profits aggressively, right now you want to be whenever you see green, just take some profits",
-      "15% 25% 50% based on how you think it goes/how much juice you think the narrative has",
-      "Moonbag, leaving a small amount just in case it goes crazy",
-      "Take initials, just so that if it goes down, you can walk away with profits",
-      "Risk management, up to you",
-      "Selling a coin",
-      "Attention peaking",
-      "Dev selling if it's ai token",
-      "Narrative died",
-      "Thesis being broken, any reason why you bought is no longer true",
-      "Larp/fake",
-      "You're happy with the amount that you made",
-    ],
-  },
-  {
-    title: "Psychology",
-    questions: [
-      "Loss rule",
-      "After you take a win. Keep the same sizing.",
-      "Revenge",
-      "Boredom",
-      "Cash out your money",
-      "Break your rules",
-    ],
-  },
-  {
-    title: "Journaling",
-    questions: [
-      "Why did I buy when I did? Emotions/narrative/thesis",
-      "Why did I sell when I sold?",
-      "Why did I hold for as long as I did?",
-      "What did I do right/wrong/lesson/improve?",
-    ],
-  },
-] as const;
 const THEME = {
   dark: {
     background: "#000000",
@@ -338,7 +176,6 @@ const THEME = {
 } as const;
 
 const DEFAULT_STATE: BoardState = {
-  mode: "freeform",
   objects: [],
   selectedIds: [],
   currentTool: "text",
@@ -381,19 +218,15 @@ function Ghostboard() {
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const pendingSnapRef = useRef<PendingSnap | null>(null);
   const activeEditorRef = useRef<EditorState | null>(null);
-  const toolToggleClickRef = useRef<{ button: number; time: number; point: Point } | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const touchPointersRef = useRef<Map<number, Point>>(new Map());
   const touchGestureRef = useRef<TouchGesture | null>(null);
-  const fourFingerSwipeRef = useRef<FourFingerSwipe | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [inputGuideMode, setInputGuideMode] = useState<InputGuideMode>("mouse");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
-  const [journalLauncherOpen, setJournalLauncherOpen] = useState(false);
-  const [journalSectionSelection, setJournalSectionSelection] = useState<string[]>([]);
   const [toast, setToast] = useState("");
   const [tick, setTick] = useState(0);
   runtimeBoardState = boardRef.current;
@@ -448,11 +281,6 @@ function Ghostboard() {
       }
 
       if (event.key === "Escape") {
-        if (journalLauncherOpen) {
-          event.preventDefault();
-          setJournalLauncherOpen(false);
-          return;
-        }
         if (contextMenu) {
           event.preventDefault();
           setContextMenu(null);
@@ -505,7 +333,7 @@ function Ghostboard() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [clearConfirmOpen, contextMenu, editor, journalLauncherOpen, settingsOpen, sidebarOpen]);
+  }, [clearConfirmOpen, contextMenu, editor, settingsOpen, sidebarOpen]);
 
   function forceUpdate() {
     setTick((value) => value + 1);
@@ -520,22 +348,8 @@ function Ghostboard() {
   }
 
   function save() {
-    const { mode, objects, viewport, settings } = boardRef.current;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ mode, objects, viewport, settings }));
-  }
-
-  function toggleMode() {
-    commitEditor();
-    cancelPendingSnap();
-    boardRef.current.mode = boardRef.current.mode === "freeform" ? "guidedJournal" : "freeform";
-    interactionRef.current = EMPTY_INTERACTION;
-    setSidebarOpen(false);
-    setSettingsOpen(false);
-    setJournalLauncherOpen(false);
-    save();
-    showToast(boardRef.current.mode === "guidedJournal" ? "Guided Journal" : "Freeform Greyboard");
-    requestRender();
-    forceUpdate();
+    const { objects, viewport, settings } = boardRef.current;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ objects, viewport, settings }));
   }
 
   function setTool(tool: Tool) {
@@ -545,13 +359,6 @@ function Ghostboard() {
     setSidebarOpen(false);
     save();
     forceUpdate();
-  }
-
-  function isDoubleUtilityClick(button: number, point: Point) {
-    const now = window.performance.now();
-    const previous = toolToggleClickRef.current;
-    toolToggleClickRef.current = { button, time: now, point };
-    return Boolean(previous && previous.button === button && now - previous.time < DOUBLE_MIDDLE_CLICK_MS && distance(previous.point, point) < 26);
   }
 
   function pushHistory(before: BoardObject[]) {
@@ -625,32 +432,12 @@ function Ghostboard() {
   function rememberTouchPointer(event: React.PointerEvent<HTMLCanvasElement>) {
     if (event.pointerType !== "touch") return;
     touchPointersRef.current.set(event.pointerId, eventPoint(event));
-    if (touchPointersRef.current.size >= 4 && !fourFingerSwipeRef.current) {
-      fourFingerSwipeRef.current = { initialCenter: touchCenter(), toggled: false };
-    }
   }
 
   function forgetTouchPointer(pointerId: number) {
     touchPointersRef.current.delete(pointerId);
     const gesture = touchGestureRef.current;
     if (gesture?.pointerIds.includes(pointerId)) touchGestureRef.current = null;
-    if (touchPointersRef.current.size < 4) fourFingerSwipeRef.current = null;
-  }
-
-  function touchCenter() {
-    const points = [...touchPointersRef.current.values()];
-    const total = points.reduce((sum, point) => ({ x: sum.x + point.x, y: sum.y + point.y }), { x: 0, y: 0 });
-    return { x: total.x / Math.max(points.length, 1), y: total.y / Math.max(points.length, 1) };
-  }
-
-  function updateFourFingerSwipe() {
-    const swipe = fourFingerSwipeRef.current;
-    if (!swipe || swipe.toggled || touchPointersRef.current.size < 4) return false;
-    const center = touchCenter();
-    if (center.y - swipe.initialCenter.y < FOUR_FINGER_SWIPE_DOWN_PX) return false;
-    swipe.toggled = true;
-    toggleMode();
-    return true;
   }
 
   function beginTouchGesture() {
@@ -912,61 +699,6 @@ function Ghostboard() {
     startEditing(text.id, before, true);
   }
 
-  function toggleJournalSection(title: string) {
-    setJournalSectionSelection((current) =>
-      current.includes(title) ? current.filter((item) => item !== title) : [...current, title],
-    );
-  }
-
-  function startJournalEntry() {
-    const selectedTitles = journalSectionSelection.includes("All")
-      ? JOURNAL_SECTIONS.map((section) => section.title)
-      : journalSectionSelection;
-    if (!selectedTitles.length) return;
-    const selectedSections = JOURNAL_SECTIONS.filter((section) => selectedTitles.includes(section.title));
-    const today = new Date().toISOString().slice(0, 10);
-    const text = [
-      `Date: ${today}`,
-      "Coin:",
-      "Ticker:",
-      "Trade type:",
-      "",
-      ...selectedSections.flatMap((section) => [
-        section.title,
-        ...section.questions,
-        "",
-      ]),
-    ].join("\n");
-    const before = cloneObjects(boardRef.current.objects);
-    const viewport = boardRef.current.viewport;
-    const center = screenToWorld({ x: window.innerWidth / 2, y: window.innerHeight / 2 }, viewport);
-    const journalText: TextObject = {
-      id: createId(),
-      type: "text",
-      x: center.x - 380,
-      y: center.y - 260,
-      width: 760,
-      height: 780,
-      rotation: 0,
-      text,
-      fontSize: 42,
-      lineHeight: 1.22,
-      color: DEFAULT_INK,
-      opacity: 0.96,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-    const metrics = measureTextBox(journalText);
-    journalText.height = Math.max(journalText.height, metrics.height + 24);
-    boardRef.current.objects = [...boardRef.current.objects, journalText];
-    boardRef.current.selectedIds = [journalText.id];
-    boardRef.current.currentTool = "select";
-    save();
-    setJournalLauncherOpen(false);
-    setJournalSectionSelection([]);
-    startEditing(journalText.id, before, true);
-  }
-
   function onPointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -996,12 +728,6 @@ function Ghostboard() {
       event.preventDefault();
       setSidebarOpen(false);
       setSettingsOpen(false);
-      return;
-    }
-
-    if (event.button === 1 && isDoubleUtilityClick(event.button, screen)) {
-      event.preventDefault();
-      toggleMode();
       return;
     }
 
@@ -1169,10 +895,6 @@ function Ghostboard() {
   function onPointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
     if (event.pointerType === "touch") {
       touchPointersRef.current.set(event.pointerId, eventPoint(event));
-      if (updateFourFingerSwipe()) {
-        event.preventDefault();
-        return;
-      }
       if (updateTouchGesture()) {
         event.preventDefault();
         return;
@@ -1454,9 +1176,6 @@ function Ghostboard() {
 
   const editorObject = editor ? boardRef.current.objects.find((object) => object.id === editor.id && object.type === "text") as TextObject | undefined : undefined;
   const editorStyle = editorObject ? makeEditorStyle(editorObject, boardRef.current.viewport) : undefined;
-  const isGuidedJournal = boardRef.current.mode === "guidedJournal";
-  const showJournalPlus = isGuidedJournal && !editor && !journalLauncherOpen && boardRef.current.objects.length === 0;
-  const allJournalSectionsSelected = journalSectionSelection.includes("All");
   const contextSelectedObjects = contextMenu
     ? boardRef.current.objects.filter((object) => boardRef.current.selectedIds.includes(object.id))
     : [];
@@ -1526,59 +1245,6 @@ function Ghostboard() {
         </div>
       )}
 
-      {showJournalPlus && (
-        <button
-          className="journal-plus"
-          type="button"
-          aria-label="Start guided journal entry"
-          onClick={() => {
-            setJournalSectionSelection([]);
-            setJournalLauncherOpen(true);
-          }}
-        >
-          +
-        </button>
-      )}
-
-      {journalLauncherOpen && (
-        <div className="journal-modal-backdrop" role="presentation" onMouseDown={() => setJournalLauncherOpen(false)}>
-          <section className="journal-modal" role="dialog" aria-modal="true" aria-label="What are you journaling?" onMouseDown={(event) => event.stopPropagation()}>
-            <h2>What are you journaling?</h2>
-            <div className="journal-options">
-              <button
-                type="button"
-                className={allJournalSectionsSelected ? "is-selected" : ""}
-                onClick={() => setJournalSectionSelection(allJournalSectionsSelected ? [] : ["All"])}
-              >
-                All
-              </button>
-              {JOURNAL_SECTIONS.map((section) => (
-                <button
-                  key={section.title}
-                  type="button"
-                  className={allJournalSectionsSelected || journalSectionSelection.includes(section.title) ? "is-selected" : ""}
-                  onClick={() => {
-                    if (allJournalSectionsSelected) setJournalSectionSelection([section.title]);
-                    else toggleJournalSection(section.title);
-                  }}
-                >
-                  {section.title}
-                </button>
-              ))}
-            </div>
-            <details className="journal-reference">
-              <summary>Reference notes</summary>
-              <p>Bonding curve -&gt; if enough people buy it, means it migrates -&gt; pumpswap</p>
-              <p>30-40k -&gt; 50-100 migrate</p>
-            </details>
-            <div className="journal-modal-actions">
-              <button type="button" onClick={() => setJournalLauncherOpen(false)}>Cancel</button>
-              <button type="button" disabled={!journalSectionSelection.length} onClick={startJournalEntry}>Continue</button>
-            </div>
-          </section>
-        </div>
-      )}
-
       <button className="menu-button" type="button" aria-label="Toggle tools" onClick={() => setSidebarOpen((open) => !open)}>
         <span />
         <span />
@@ -1593,7 +1259,6 @@ function Ghostboard() {
       <aside className={`sidebar ${sidebarOpen ? "is-open" : ""}`} aria-hidden={!sidebarOpen}>
         <div className="brand">
           <strong>Greyboard</strong>
-          <span>{isGuidedJournal ? "Guided Journal" : "Freeform Greyboard"}</span>
         </div>
 
         <div className="tool-list" role="toolbar" aria-label="Greyboard tools">
@@ -1807,7 +1472,6 @@ function Ghostboard() {
                 <span>Control + drag = multi-select</span>
                 <span>Right-click selection = group</span>
                 <span>Middle mouse drag = pan</span>
-                <span>Double middle click = Freeform / Journal</span>
                 <span>Control + scroll = zoom</span>
                 <span>Shift + scroll = horizontal pan</span>
                 <span>Copy image / paste: Control C and Control V</span>
@@ -1821,7 +1485,6 @@ function Ghostboard() {
                 <span>Control + drag = multi-select</span>
                 <span>Right-click selection = group</span>
                 <span>Two-finger drag = pan</span>
-                <span>Four-finger swipe down = Freeform / Journal</span>
                 <span>Pinch = zoom</span>
                 <span>Shift + two-finger scroll = horizontal pan</span>
                 <span>Copy image / paste: Control C and Control V</span>
@@ -2596,7 +2259,6 @@ function loadState(): BoardState {
     const objects = Array.isArray(parsed.objects) ? parsed.objects as BoardObject[] : [];
     return {
       ...cloneState(DEFAULT_STATE),
-      mode: parsed.mode === "guidedJournal" ? "guidedJournal" : "freeform",
       objects: normalizeObjects(objects),
       viewport: { ...DEFAULT_STATE.viewport, ...(parsed.viewport ?? {}) },
       settings: { ...DEFAULT_STATE.settings, ...(parsed.settings ?? {}) },
@@ -2625,7 +2287,6 @@ function normalizeObjects(objects: BoardObject[]) {
 function cloneState(state: BoardState): BoardState {
   return {
     ...state,
-    mode: state.mode,
     objects: cloneObjects(state.objects),
     selectedIds: [...state.selectedIds],
     viewport: { ...state.viewport },
@@ -2905,3 +2566,4 @@ function boardRefSafe(): BoardState {
 
 const root = createRoot(document.getElementById("root") as HTMLElement);
 root.render(<Ghostboard />);
+
