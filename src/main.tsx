@@ -128,6 +128,14 @@ type PendingSnap = {
   strokeId: string;
 };
 
+type TouchGesture = {
+  pointerIds: [number, number];
+  initialCenter: Point;
+  initialDistance: number;
+  initialScale: number;
+  initialWorldCenter: Point;
+};
+
 const STORAGE_KEY = "ghostboard.state.v1";
 const LOCAL_CLIPBOARD_KEY = "greyboard.clipboard.v1";
 const CLIPBOARD_PREFIX = "greyboard/objects:";
@@ -211,6 +219,8 @@ function Ghostboard() {
   const activeEditorRef = useRef<EditorState | null>(null);
   const toolToggleClickRef = useRef<{ button: number; time: number; point: Point } | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const touchPointersRef = useRef<Map<number, Point>>(new Map());
+  const touchGestureRef = useRef<TouchGesture | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editor, setEditor] = useState<EditorState | null>(null);
@@ -431,6 +441,55 @@ function Ghostboard() {
     setObjects(before.filter((object) => !ids.has(object.id)), before);
   }
 
+  function rememberTouchPointer(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (event.pointerType !== "touch") return;
+    touchPointersRef.current.set(event.pointerId, eventPoint(event));
+  }
+
+  function forgetTouchPointer(pointerId: number) {
+    touchPointersRef.current.delete(pointerId);
+    const gesture = touchGestureRef.current;
+    if (gesture?.pointerIds.includes(pointerId)) touchGestureRef.current = null;
+  }
+
+  function beginTouchGesture() {
+    const entries = [...touchPointersRef.current.entries()];
+    if (entries.length < 2) return false;
+    const [first, second] = entries.slice(-2);
+    const firstPoint = first[1];
+    const secondPoint = second[1];
+    const center = midpoint(firstPoint, secondPoint);
+    touchGestureRef.current = {
+      pointerIds: [first[0], second[0]],
+      initialCenter: center,
+      initialDistance: Math.max(distance(firstPoint, secondPoint), 1),
+      initialScale: boardRef.current.viewport.scale,
+      initialWorldCenter: screenToWorld(center, boardRef.current.viewport),
+    };
+    interactionRef.current = EMPTY_INTERACTION;
+    commitEditor();
+    cancelPendingSnap();
+    return true;
+  }
+
+  function updateTouchGesture() {
+    const gesture = touchGestureRef.current;
+    if (!gesture) return false;
+    const first = touchPointersRef.current.get(gesture.pointerIds[0]);
+    const second = touchPointersRef.current.get(gesture.pointerIds[1]);
+    if (!first || !second) return false;
+    const center = midpoint(first, second);
+    const nextScale = clamp(gesture.initialScale * (distance(first, second) / gesture.initialDistance), MIN_SCALE, MAX_SCALE);
+    const viewport = boardRef.current.viewport;
+    viewport.scale = nextScale;
+    viewport.offsetX = center.x - gesture.initialWorldCenter.x * nextScale;
+    viewport.offsetY = center.y - gesture.initialWorldCenter.y * nextScale;
+    save();
+    requestRender();
+    forceUpdate();
+    return true;
+  }
+
   function showToast(message: string) {
     setToast(message);
     if (toastTimerRef.current != null) window.clearTimeout(toastTimerRef.current);
@@ -591,6 +650,13 @@ function Ghostboard() {
   function onPointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    rememberTouchPointer(event);
+    if (event.pointerType === "touch" && touchPointersRef.current.size >= 2) {
+      event.preventDefault();
+      canvas.setPointerCapture(event.pointerId);
+      beginTouchGesture();
+      return;
+    }
 
     const screen = eventPoint(event);
     const world = screenToWorld(screen, boardRef.current.viewport);
@@ -770,6 +836,13 @@ function Ghostboard() {
   }
 
   function onPointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (event.pointerType === "touch") {
+      touchPointersRef.current.set(event.pointerId, eventPoint(event));
+      if (updateTouchGesture()) {
+        event.preventDefault();
+        return;
+      }
+    }
     const interaction = interactionRef.current;
     const screen = eventPoint(event);
     const world = screenToWorld(screen, boardRef.current.viewport);
@@ -870,6 +943,8 @@ function Ghostboard() {
     if (canvas?.hasPointerCapture(event.pointerId)) {
       canvas.releasePointerCapture(event.pointerId);
     }
+    forgetTouchPointer(event.pointerId);
+    if (event.pointerType === "touch" && touchGestureRef.current) return;
 
     if (interaction.type === "draw" && interaction.pointerId === event.pointerId) {
       const before = cloneObjects(boardRef.current.objects);
@@ -1095,6 +1170,11 @@ function Ghostboard() {
         <span />
         <span />
       </button>
+
+      <div className="mobile-history" aria-label="Undo and redo">
+        <button type="button" aria-label="Undo" onClick={undo}>↶</button>
+        <button type="button" aria-label="Redo" onClick={redo}>↷</button>
+      </div>
 
       <aside className={`sidebar ${sidebarOpen ? "is-open" : ""}`} aria-hidden={!sidebarOpen}>
         <div className="brand">
@@ -1323,7 +1403,7 @@ function Ghostboard() {
                 <span>Press and drag = draw</span>
                 <span>Control + drag = multi-select</span>
                 <span>Two-finger drag = pan</span>
-                <span>Control + two-finger scroll = zoom</span>
+                <span>Pinch = zoom</span>
                 <span>Shift + two-finger scroll = horizontal pan</span>
                 <span>Copy image / paste: Control C and Control V</span>
                 <span>Undo / redo: Control Z and Control Y</span>
@@ -2366,6 +2446,10 @@ function pointToSegmentDistance(point: Point, a: Point, b: Point) {
 
 function distance(a: Point, b: Point) {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function midpoint(a: Point, b: Point): Point {
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
 }
 
 function clamp(value: number, min: number, max: number) {

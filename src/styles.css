@@ -116,6 +116,34 @@ textarea {
   box-shadow: 0 0 4px color-mix(in srgb, var(--gb-ink, #fff) 18%, transparent);
 }
 
+.mobile-history {
+  position: fixed;
+  z-index: 5;
+  top: 10px;
+  right: 10px;
+  display: none;
+  gap: 8px;
+}
+
+.mobile-history button {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  color: var(--gb-ink, rgba(255, 255, 255, 0.9));
+  background: color-mix(in srgb, var(--gb-bg, #000) 78%, transparent);
+  border: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 12%, transparent);
+  border-radius: 8px;
+  font-size: 20px;
+  line-height: 1;
+  opacity: 0.72;
+}
+
+.mobile-history button:active {
+  opacity: 1;
+  transform: translateY(1px);
+}
+
 .toast {
   position: fixed;
   z-index: 8;
@@ -396,5 +424,11 @@ textarea {
 
   .sidebar {
     padding-top: 52px;
+  }
+}
+
+@media (pointer: coarse) {
+  .mobile-history {
+    display: flex;
   }
 }
