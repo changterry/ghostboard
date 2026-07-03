@@ -67,8 +67,17 @@ export default async function handler(request, response) {
     ]);
     const todos = normalizeMessages([...incomingMessages, ...sentMessages], userEmails);
     response.status(200).json({ todos });
-  } catch {
-    response.status(500).json({ error: "Could not load scheduled inbox todos", todos: [] });
+  } catch (error) {
+    const code = error instanceof GreyboardInboxError ? error.code : "scheduled_inbox_failed";
+    console.error("Scheduled inbox failed", { code });
+    response.status(500).json({ error: "Could not load scheduled inbox todos", code, todos: [] });
+  }
+}
+
+class GreyboardInboxError extends Error {
+  constructor(code) {
+    super(code);
+    this.code = code;
   }
 }
 
@@ -80,9 +89,9 @@ async function getAccessToken() {
     grant_type: "refresh_token",
   });
   const tokenResponse = await fetch(GMAIL_TOKEN_URL, { method: "POST", body });
-  if (!tokenResponse.ok) throw new Error("Token refresh failed");
+  if (!tokenResponse.ok) throw new GreyboardInboxError("google_token_refresh_failed");
   const data = await tokenResponse.json();
-  if (!data.access_token) throw new Error("Missing access token");
+  if (!data.access_token) throw new GreyboardInboxError("google_access_token_missing");
   return data.access_token;
 }
 
@@ -129,7 +138,7 @@ async function fetchSentFollowUpMessages(accessToken, userEmails) {
 
 async function gmailFetch(url, accessToken) {
   const result = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-  if (!result.ok) throw new Error("Gmail request failed");
+  if (!result.ok) throw new GreyboardInboxError(`gmail_api_${result.status}`);
   return result.json();
 }
 
