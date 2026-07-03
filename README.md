@@ -59,6 +59,85 @@ After deployment, the app should open directly at the Vercel URL, for example:
 https://greyboard.vercel.app
 ```
 
+## Scheduled Inbox Gmail Setup
+
+Greyboard's Inbox Feed calls the server route:
+
+```text
+GET /api/scheduled-inbox/todos
+```
+
+The browser never talks to Gmail directly and never receives Gmail credentials. If OAuth is not configured, the route returns:
+
+```json
+{ "error": "Gmail integration not configured", "todos": [] }
+```
+
+### Required Server Env Vars
+
+Set these in Vercel project settings as server-side environment variables:
+
+```text
+GOOGLE_CLIENT_ID
+GOOGLE_CLIENT_SECRET
+GOOGLE_REFRESH_TOKEN
+SCHEDULED_INBOX_USER_EMAILS=you@example.com,school@example.edu
+```
+
+Only add `OPENAI_API_KEY` later if the server route is changed to use server-side AI classification. Do not expose any of these as `VITE_` variables.
+
+### Google Cloud OAuth
+
+1. Create or open a Google Cloud project.
+2. Enable the Gmail API.
+3. Configure the OAuth consent screen for your account.
+4. Create an OAuth Client ID.
+5. Use the narrow read-only Gmail scope:
+
+```text
+https://www.googleapis.com/auth/gmail.readonly
+```
+
+6. Add this redirect URI to the OAuth client:
+
+```text
+http://localhost:5173/oauth2callback
+```
+
+### Generate A Refresh Token
+
+In a local shell, set only local environment variables:
+
+```bash
+export GOOGLE_CLIENT_ID="..."
+export GOOGLE_CLIENT_SECRET="..."
+pnpm gmail:token
+```
+
+On Windows PowerShell:
+
+```powershell
+$env:GOOGLE_CLIENT_ID="..."
+$env:GOOGLE_CLIENT_SECRET="..."
+pnpm gmail:token
+```
+
+Open the printed Google URL, approve Gmail read-only access, paste the returned authorization code, then copy the printed `GOOGLE_REFRESH_TOKEN` into Vercel environment variables.
+
+Do not commit the refresh token. Do not paste it into frontend code. Do not store it in localStorage.
+
+### What The Route Returns
+
+The server route fetches recent Gmail metadata, ignores obvious bulk/promotional sources such as Handshake alerts, and returns only action-shaped todos such as:
+
+- personal replies
+- professor, lab, or academic responses
+- recruiter or internship messages expecting a response
+- meeting/date/deadline changes
+- sent cold emails older than one week that may need follow-up
+
+The current implementation is conservative heuristic classification. It does not send email, modify Gmail, create Gmail drafts, or request Gmail write scopes.
+
 ## Acceptance Checklist
 
 - A deployed Vercel link opens directly to Greyboard.

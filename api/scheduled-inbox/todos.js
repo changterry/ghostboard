@@ -1,8 +1,48 @@
 const GMAIL_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
+const GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 
-const IGNORE_SENDERS = ["handshake", "project xyz"];
-const USER_EMAILS = ["changg.terry@gmail.com", "tchang@umass.edu"];
+const PERSONAL_SIGNAL_WORDS = [
+  "reply",
+  "respond",
+  "follow up",
+  "following up",
+  "checking in",
+  "quick question",
+  "could you",
+  "can you",
+  "would you",
+  "let me know",
+  "next step",
+  "schedule",
+  "reschedule",
+  "meeting",
+  "deadline",
+  "interview",
+  "application",
+  "transcript",
+  "internship",
+  "research",
+  "professor",
+  "lab",
+  "reu",
+];
+
+const IGNORE_PATTERNS = [
+  /handshake/i,
+  /project\s*xyz/i,
+  /promotion/i,
+  /unsubscribe/i,
+  /newsletter/i,
+  /no-?reply/i,
+  /donotreply/i,
+  /do-not-reply/i,
+  /notification/i,
+  /digest/i,
+  /career fair/i,
+  /job alert/i,
+  /internship alert/i,
+];
 
 export default async function handler(request, response) {
   if (request.method !== "GET") {
@@ -20,8 +60,12 @@ export default async function handler(request, response) {
 
   try {
     const accessToken = await getAccessToken();
-    const messages = await fetchCandidateMessages(accessToken);
-    const todos = normalizeMessages(messages);
+    const userEmails = getConfiguredUserEmails();
+    const [incomingMessages, sentMessages] = await Promise.all([
+      fetchCandidateMessages(accessToken, incomingQuery()),
+      fetchSentFollowUpMessages(accessToken, userEmails),
+    ]);
+    const todos = normalizeMessages([...incomingMessages, ...sentMessages], userEmails);
     response.status(200).json({ todos });
   } catch {
     response.status(500).json({ error: "Could not load scheduled inbox todos", todos: [] });
@@ -42,23 +86,45 @@ async function getAccessToken() {
   return data.access_token;
 }
 
-async function fetchCandidateMessages(accessToken) {
-  const query = [
+function incomingQuery() {
+  return [
     "newer_than:30d",
+    "in:inbox",
     "-category:promotions",
     "-category:social",
     "-from:handshake",
     "-subject:handshake",
     "-subject:\"Project XYZ\"",
-    "(in:inbox OR in:sent)",
   ].join(" ");
-  const listUrl = `${GMAIL_API_BASE}/messages?maxResults=20&q=${encodeURIComponent(query)}`;
+}
+
+function sentFollowUpQuery() {
+  return [
+    "newer_than:90d",
+    "older_than:7d",
+    "in:sent",
+    "-to:handshake",
+    "-subject:handshake",
+    "-subject:\"Project XYZ\"",
+  ].join(" ");
+}
+
+async function fetchCandidateMessages(accessToken, query) {
+  const listUrl = `${GMAIL_API_BASE}/messages?maxResults=25&q=${encodeURIComponent(query)}`;
   const list = await gmailFetch(listUrl, accessToken);
   const messages = list.messages ?? [];
-  const fullMessages = await Promise.all(messages.map((message) =>
-    gmailFetch(`${GMAIL_API_BASE}/messages/${message.id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`, accessToken),
+  return Promise.all(messages.map((message) =>
+    gmailFetch(`${GMAIL_API_BASE}/messages/${message.id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Subject&metadataHeaders=Date`, accessToken),
   ));
-  return fullMessages;
+}
+
+async function fetchSentFollowUpMessages(accessToken, userEmails) {
+  const sentMessages = await fetchCandidateMessages(accessToken, sentFollowUpQuery());
+  const checks = await Promise.all(sentMessages.map(async (message) => {
+    const thread = await gmailFetch(`${GMAIL_API_BASE}/threads/${message.threadId}?format=metadata&metadataHeaders=From&metadataHeaders=Date`, accessToken);
+    return hasNonUserReplyAfterMessage(thread.messages ?? [], message, userEmails) ? null : message;
+  }));
+  return checks.filter(Boolean);
 }
 
 async function gmailFetch(url, accessToken) {
@@ -67,44 +133,58 @@ async function gmailFetch(url, accessToken) {
   return result.json();
 }
 
-function normalizeMessages(messages) {
-  return messages
-    .map(toInboxTodo)
-    .filter(Boolean)
+function normalizeMessages(messages, userEmails) {
+  const seen = new Set();
+  const todos = [];
+  for (const message of messages) {
+    const todo = toInboxTodo(message, userEmails);
+    if (!todo || seen.has(todo.id)) continue;
+    seen.add(todo.id);
+    todos.push(todo);
+  }
+  return todos
+    .sort((a, b) => urgencyRank(b.urgency) - urgencyRank(a.urgency) || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
     .slice(0, 12);
 }
 
-function toInboxTodo(message) {
-  const headers = Object.fromEntries((message.payload?.headers ?? []).map((header) => [header.name.toLowerCase(), header.value]));
+function toInboxTodo(message, userEmails) {
+  const headers = headerMap(message);
   const from = headers.from ?? "";
   const to = headers.to ?? "";
+  const cc = headers.cc ?? "";
   const subject = headers.subject ?? "(no subject)";
+  const snippet = message.snippet ?? "";
   const date = headers.date ? new Date(headers.date) : new Date();
+  const haystack = `${from} ${to} ${cc} ${subject} ${snippet}`;
   const fromLower = from.toLowerCase();
-  const subjectLower = subject.toLowerCase();
+  const sentByUser = userEmails.some((email) => fromLower.includes(email));
 
-  if (IGNORE_SENDERS.some((blocked) => fromLower.includes(blocked) || subjectLower.includes(blocked))) return null;
-  if (subjectLower.includes("project xyz")) return null;
+  if (shouldIgnoreMessage(haystack, from, to, cc, sentByUser)) return null;
+  if (!sentByUser && !looksActionWorthy(haystack, from, to, cc)) return null;
 
-  const sentByUser = USER_EMAILS.some((email) => fromLower.includes(email));
-  const contactName = extractContactName(sentByUser ? to : from);
-  const type = sentByUser ? "follow_up" : inferType(subjectLower, fromLower);
-  const dueDate = dueDateFromText(`${subject} ${message.snippet ?? ""}`) ?? (sentByUser ? "Follow up" : "Today");
+  const contactSource = sentByUser ? to : from;
+  const contactName = extractContactName(contactSource);
+  const dueDate = dueDateFromText(haystack) ?? (sentByUser ? "Follow up" : undefined);
+  const type = sentByUser ? "follow_up" : inferType(haystack, from);
+  const urgency = inferUrgency(haystack, dueDate, sentByUser);
+  const reason = sentByUser
+    ? "Sent email has not had a visible response after a week."
+    : reasonForType(type, dueDate);
 
   return {
-    id: `gmail-${message.threadId || message.id}-${type}`,
+    id: stableTodoId(message, type),
     type,
     title: sentByUser ? `Follow up with ${contactName || "contact"}` : titleForType(type, contactName),
     contactName,
-    contactEmail: extractEmail(sentByUser ? to : from),
+    contactEmail: extractEmail(contactSource),
     subject,
     emailThreadId: message.threadId,
     emailMessageId: message.id,
     gmailUrl: message.threadId ? `https://mail.google.com/mail/u/0/#inbox/${message.threadId}` : undefined,
     dueDate,
-    urgency: dueDate && /today|tonight/i.test(dueDate) ? "high" : "medium",
-    reason: sentByUser ? "Sent email may need a follow-up." : "Email appears to need a reply or action.",
-    suggestedAction: sentByUser ? "Send a short follow-up and ask about next steps." : "Reply concisely and clarify the next step.",
+    urgency,
+    reason,
+    suggestedAction: sentByUser ? "Send a short follow-up and ask about next steps." : suggestedActionForType(type),
     source: "gmail",
     status: "open",
     createdAt: date.toISOString(),
@@ -112,22 +192,109 @@ function toInboxTodo(message) {
   };
 }
 
-function inferType(subject, from) {
-  if (/prof|edu|university|college/.test(from) || /reu|lab|professor/.test(subject)) return "professor";
-  if (/recruit|intern|interview/.test(subject)) return "recruiter";
-  if (/calendar|resched|time change|deadline/.test(subject)) return "calendar_change";
+function hasNonUserReplyAfterMessage(threadMessages, sentMessage, userEmails) {
+  const sentDate = messageDate(sentMessage);
+  return threadMessages.some((message) => {
+    if (message.id === sentMessage.id) return false;
+    if (messageDate(message) <= sentDate) return false;
+    const from = headerMap(message).from ?? "";
+    return !isFromUser(from, userEmails);
+  });
+}
+
+function headerMap(message) {
+  return Object.fromEntries((message.payload?.headers ?? []).map((header) => [header.name.toLowerCase(), header.value]));
+}
+
+function messageDate(message) {
+  const headers = headerMap(message);
+  const date = headers.date ? new Date(headers.date) : new Date(Number(message.internalDate || 0));
+  return Number.isNaN(date.getTime()) ? new Date(0) : date;
+}
+
+function isFromUser(from, userEmails) {
+  const fromLower = from.toLowerCase();
+  return userEmails.some((email) => fromLower.includes(email));
+}
+
+function shouldIgnoreMessage(text, from, to, cc, sentByUser) {
+  if (IGNORE_PATTERNS.some((pattern) => pattern.test(text))) return true;
+  const fromLower = from.toLowerCase();
+  const textLower = text.toLowerCase();
+  if (fromLower.includes("ride") && recipientCount(`${to},${cc}`) > 4) return true;
+  if (!sentByUser && recipientCount(`${to},${cc}`) > 8 && !/(meeting|deadline|resched|time change|interview|reply|respond)/i.test(textLower)) return true;
+  return false;
+}
+
+function looksActionWorthy(text, from, to, cc) {
+  const lower = text.toLowerCase();
+  if (PERSONAL_SIGNAL_WORDS.some((word) => lower.includes(word))) return true;
+  if (/@(edu|umass\.edu)>?/i.test(from)) return true;
+  if (recipientCount(`${to},${cc}`) <= 3 && !/(newsletter|alert|promotion|webinar|event)/i.test(lower)) return true;
+  return false;
+}
+
+function inferType(text, from) {
+  const lower = text.toLowerCase();
+  if (/prof|professor|reu|lab|research|\.edu|university|college/.test(`${lower} ${from.toLowerCase()}`)) return "professor";
+  if (/recruit|interview|intern|hiring/.test(lower)) return "recruiter";
+  if (/calendar|resched|time change|deadline|meeting/.test(lower)) return "calendar_change";
+  if (/send|transcript|document|resume/.test(lower)) return "send";
   return "reply";
+}
+
+function inferUrgency(text, dueDate, sentByUser) {
+  if (dueDate && /today|tonight|tomorrow/i.test(dueDate)) return "high";
+  if (/(urgent|asap|deadline|today|tonight|tomorrow|interview)/i.test(text)) return "high";
+  return sentByUser ? "medium" : "medium";
+}
+
+function reasonForType(type, dueDate) {
+  if (type === "calendar_change") return "Meeting or deadline timing appears to need attention.";
+  if (type === "professor") return "Professor, lab, or academic email appears to need a personal response.";
+  if (type === "recruiter") return "Recruiter or internship email appears to expect a response.";
+  if (type === "send") return "Email appears to require sending a document or follow-up item.";
+  return dueDate ? "Email appears to need a personal response by the detected date." : "Email appears to need a personal response.";
+}
+
+function suggestedActionForType(type) {
+  if (type === "calendar_change") return "Confirm the date or time and ask any needed follow-up question.";
+  if (type === "professor") return "Reply concisely and clarify the next academic or lab step.";
+  if (type === "recruiter") return "Reply with availability or a concise next-step question.";
+  if (type === "send") return "Send the requested item and confirm receipt.";
+  return "Reply concisely and clarify the next step.";
 }
 
 function titleForType(type, contactName) {
   if (type === "professor") return `Reply to ${contactName || "professor"}`;
   if (type === "recruiter") return `Reply to ${contactName || "recruiter"}`;
+  if (type === "calendar_change") return `Confirm with ${contactName || "contact"}`;
+  if (type === "send") return `Send item to ${contactName || "contact"}`;
   return `Reply to ${contactName || "contact"}`;
 }
 
 function dueDateFromText(text) {
   const match = text.match(/\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?|\d{1,2}:\d{2}\s?(?:am|pm)?|\d{1,2}\s?(?:am|pm))\b/i);
   return match?.[0];
+}
+
+function stableTodoId(message, type) {
+  return `gmail-${message.threadId || message.id}-${type}`;
+}
+
+function getConfiguredUserEmails() {
+  return (process.env.SCHEDULED_INBOX_USER_EMAILS || "")
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function recipientCount(value) {
+  return value.split(",").map((part) => part.trim()).filter(Boolean).length;
+}
+
+function urgencyRank(urgency) {
+  return urgency === "high" ? 3 : urgency === "medium" ? 2 : 1;
 }
 
 function extractContactName(value) {
@@ -138,3 +305,5 @@ function extractContactName(value) {
 function extractEmail(value) {
   return value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
 }
+
+export { GMAIL_READONLY_SCOPE };
