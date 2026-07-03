@@ -7,6 +7,8 @@ type ShapeKind = "line" | "arrow" | "ellipse" | "rect" | "triangle" | "curve";
 type ThemeMode = "dark" | "light";
 type InputGuideMode = "mouse" | "touchpad";
 type SidebarAction = Tool | "clear" | "settings" | "find" | "library";
+type InboxUrgency = "low" | "medium" | "high";
+type InboxStatus = "open" | "done" | "dismissed";
 
 type Point = {
   x: number;
@@ -46,6 +48,7 @@ type BaseObject = {
   groupId?: string;
   label?: string;
   note?: string;
+  metadata?: Record<string, unknown>;
   color: string;
   rotation?: number;
   origin?: RotationOrigin;
@@ -172,8 +175,42 @@ type SmartFindState = {
   activeIndex: number;
 };
 
+type InboxTodo = {
+  id: string;
+  type: "reply" | "follow_up" | "send" | "deadline_change" | "calendar_change" | "recruiter" | "lab" | "professor" | "personal";
+  title: string;
+  contactName?: string;
+  contactEmail?: string;
+  subject?: string;
+  emailThreadId?: string;
+  emailMessageId?: string;
+  gmailUrl?: string;
+  dueDate?: string;
+  urgency: InboxUrgency;
+  reason: string;
+  suggestedAction: string;
+  suggestedDraft?: string;
+  source: "scheduled_inbox" | "gmail";
+  status: InboxStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type InboxState = {
+  todos: InboxTodo[];
+  loading: boolean;
+  error: string;
+  lastUpdated?: string;
+};
+
+type InboxStatusState = {
+  done: Record<string, string>;
+  dismissed: Record<string, string>;
+};
+
 const STORAGE_KEY = "ghostboard.state.v1";
 const GREYBOARD_LIBRARY_STORAGE_KEY = "greyboard.library.v1";
+const INBOX_STATUS_STORAGE_KEY = "greyboard.inboxTodos.status.v1";
 const LOCAL_CLIPBOARD_KEY = "greyboard.clipboard.v1";
 const CLIPBOARD_PREFIX = "greyboard/objects:";
 const CLIPBOARD_HTML_PREFIX = "greyboard-data:";
@@ -187,6 +224,8 @@ const DRAG_THRESHOLD_PX = 5;
 const DEFAULT_TEXT_LINE_HEIGHT = 1.16;
 const TEXT_FONT_FAMILY = "\"Segoe Print\", \"Comic Sans MS\", \"Bradley Hand ITC\", cursive";
 const SMART_FIND_EMPTY: SmartFindState = { isOpen: false, query: "", results: [], activeIndex: 0 };
+const SCHEDULE_HIGHLIGHT = "#d8c900";
+const USE_MOCK_INBOX = ((import.meta as unknown as { env?: Record<string, string> }).env?.VITE_USE_MOCK_INBOX) === "true";
 const THEME = {
   dark: {
     background: "#000000",
@@ -271,6 +310,8 @@ function Ghostboard() {
   const [inputGuideMode, setInputGuideMode] = useState<InputGuideMode>(activeLibraryBoard(libraryRef.current).inputGuideMode ?? "mouse");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [smartFind, setSmartFind] = useState<SmartFindState>(SMART_FIND_EMPTY);
+  const [inbox, setInbox] = useState<InboxState>({ todos: [], loading: true, error: "" });
+  const [inboxStatus, setInboxStatus] = useState<InboxStatusState>(loadInboxStatus());
   const [libraryTick, setLibraryTick] = useState(0);
   const [toast, setToast] = useState("");
   const [tick, setTick] = useState(0);
@@ -408,6 +449,10 @@ function Ghostboard() {
   }, [smartFind.isOpen]);
 
   useEffect(() => {
+    void fetchInboxTodos();
+  }, []);
+
+  useEffect(() => {
     const persist = () => save();
     const onVisibilityChange = () => {
       if (document.visibilityState === "hidden") persist();
@@ -448,6 +493,107 @@ function Ghostboard() {
     library.boards[updated.id] = updated;
     library.activeBoardId = updated.id;
     saveLibrary(library);
+  }
+
+  async function fetchInboxTodos() {
+    setInbox((current) => ({ ...current, loading: true, error: "" }));
+    try {
+      const todos = USE_MOCK_INBOX ? mockInboxTodos() : await fetchInboxTodosFromApi();
+      setInbox({
+        todos: applyInboxStatus(todos, inboxStatus),
+        loading: false,
+        error: "",
+        lastUpdated: new Date().toISOString(),
+      });
+    } catch (error) {
+      setInbox({
+        todos: [],
+        loading: false,
+        error: error instanceof Error ? error.message : "Could not load inbox todos.",
+        lastUpdated: new Date().toISOString(),
+      });
+    }
+  }
+
+  function setTodoStatus(todoId: string, status: "done" | "dismissed") {
+    const timestamp = new Date().toISOString();
+    const next: InboxStatusState = {
+      done: { ...inboxStatus.done },
+      dismissed: { ...inboxStatus.dismissed },
+    };
+    if (status === "done") next.done[todoId] = timestamp;
+    if (status === "dismissed") next.dismissed[todoId] = timestamp;
+    setInboxStatus(next);
+    saveInboxStatus(next);
+    setInbox((current) => ({ ...current, todos: applyInboxStatus(current.todos, next) }));
+  }
+
+  function addInboxTodoToBoard(todo: InboxTodo) {
+    commitEditor();
+    const existing = boardRef.current.objects.find((object) =>
+      object.metadata?.source === "scheduled_inbox" && object.metadata?.inboxTodoId === todo.id,
+    );
+    if (existing) {
+      boardRef.current.selectedIds = [existing.id];
+      zoomToBounds(expandRect(objectBounds(existing), 90), { duration: 500, paddingPx: 160, maxScale: 1.25 });
+      showToast("Already on this board");
+      requestRender();
+      forceUpdate();
+      return;
+    }
+
+    const before = cloneObjects(boardRef.current.objects);
+    const viewport = boardRef.current.viewport;
+    const center = screenToWorld({ x: window.innerWidth / 2, y: window.innerHeight / 2 }, viewport);
+    const text: TextObject = {
+      id: createId(),
+      type: "text",
+      x: center.x - 360,
+      y: center.y - 180,
+      width: 720,
+      height: 360,
+      rotation: 0,
+      text: formatInboxTodoText(todo),
+      fontSize: Math.max(42, Math.min(boardRef.current.settings.defaultFontSize, 58)),
+      lineHeight: 1.18,
+      color: DEFAULT_INK,
+      opacity: 0.96,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      label: todo.title,
+      note: [todo.reason, todo.suggestedAction, todo.suggestedDraft, todo.contactName, todo.subject].filter(Boolean).join(" "),
+      metadata: {
+        source: "scheduled_inbox",
+        inboxTodoId: todo.id,
+        emailThreadId: todo.emailThreadId,
+        emailMessageId: todo.emailMessageId,
+        gmailUrl: todo.gmailUrl,
+        dueDate: todo.dueDate,
+        urgency: todo.urgency,
+        contactName: todo.contactName,
+        subject: todo.subject,
+      },
+    };
+    const metrics = measureTextBox(text);
+    text.height = Math.max(text.height, metrics.height + 24);
+    boardRef.current.objects = [...boardRef.current.objects, text];
+    boardRef.current.selectedIds = [text.id];
+    boardRef.current.currentTool = "select";
+    pushHistory(before);
+    save();
+    requestRender();
+    forceUpdate();
+    showToast("Added email todo");
+  }
+
+  async function copyInboxDraft(todo: InboxTodo) {
+    if (!todo.suggestedDraft) return;
+    try {
+      await navigator.clipboard.writeText(todo.suggestedDraft);
+      showToast("Draft copied");
+    } catch {
+      showToast("Could not copy draft");
+    }
   }
 
   function openLibrary() {
@@ -1727,6 +1873,35 @@ function Ghostboard() {
           </div>
         )}
 
+        <section className="inbox-feed" aria-label="Inbox Feed">
+          <div className="inbox-feed-header">
+            <strong>Inbox Feed</strong>
+            <button type="button" onClick={() => void fetchInboxTodos()} disabled={inbox.loading}>
+              {inbox.loading ? "Loading" : "Refresh"}
+            </button>
+          </div>
+          {inbox.loading && <p>Loading inbox todos...</p>}
+          {!inbox.loading && inbox.error && <p>{inbox.error}</p>}
+          {!inbox.loading && !inbox.error && visibleInboxTodos(inbox.todos).length === 0 && <p>No email todos right now.</p>}
+          {!inbox.loading && !inbox.error && visibleInboxTodos(inbox.todos).map((todo) => (
+            <div key={todo.id} className={`inbox-item urgency-${todo.urgency}`}>
+              <button type="button" className="inbox-item-main" onClick={() => addInboxTodoToBoard(todo)}>
+                <span>{todo.title}</span>
+                {todo.dueDate && <em>{todo.dueDate}</em>}
+              </button>
+              <small>{todo.reason}</small>
+              <div className="inbox-item-actions">
+                <button type="button" onClick={() => addInboxTodoToBoard(todo)}>Add</button>
+                <button type="button" onClick={() => setTodoStatus(todo.id, "done")}>Done</button>
+                <button type="button" onClick={() => setTodoStatus(todo.id, "dismissed")}>Dismiss</button>
+                {todo.suggestedDraft && <button type="button" onClick={() => void copyInboxDraft(todo)}>Copy draft</button>}
+                {todo.gmailUrl && <button type="button" onClick={() => window.open(todo.gmailUrl, "_blank", "noopener,noreferrer")}>Gmail</button>}
+              </div>
+            </div>
+          ))}
+          {inbox.lastUpdated && <span className="inbox-updated">Updated {formatBoardTime(inbox.lastUpdated)}</span>}
+        </section>
+
         {settingsOpen && (
           <div className="settings-panel">
             <label>
@@ -1965,14 +2140,38 @@ function renderText(ctx: CanvasRenderingContext2D, object: TextObject, settings:
   const visualTopOffset = getTextVisualTopOffset(ctx, object.fontSize, lineHeightFactor);
   lines.forEach((line, index) => {
     const y = visualTopOffset + index * lineHeight;
-    ctx.fillText(line, 0, y);
+    renderHighlightedTextLine(ctx, line, 0, y, ink);
     if (settings.chalkTexture) {
       ctx.globalAlpha = object.opacity * 0.13;
-      ctx.fillText(line, seededNoise(object.id, index) * 1.4, y + seededNoise(object.id, index + 99) * 1.2);
+      renderHighlightedTextLine(ctx, line, seededNoise(object.id, index) * 1.4, y + seededNoise(object.id, index + 99) * 1.2, ink);
       ctx.globalAlpha = object.opacity;
     }
   });
   ctx.restore();
+}
+
+function renderHighlightedTextLine(ctx: CanvasRenderingContext2D, line: string, x: number, y: number, ink: string) {
+  const parts = splitScheduleHighlights(line);
+  let cursor = x;
+  for (const part of parts) {
+    ctx.fillStyle = part.highlight ? SCHEDULE_HIGHLIGHT : ink;
+    ctx.fillText(part.text, cursor, y);
+    cursor += ctx.measureText(part.text).width;
+  }
+}
+
+function splitScheduleHighlights(line: string) {
+  const pattern = /\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun|noon|midnight|\d{1,2}:\d{2}\s?(?:am|pm)?|\d{1,2}\s?(?:am|pm)|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/gi;
+  const parts: Array<{ text: string; highlight: boolean }> = [];
+  let last = 0;
+  for (const match of line.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index > last) parts.push({ text: line.slice(last, index), highlight: false });
+    parts.push({ text: match[0], highlight: true });
+    last = index + match[0].length;
+  }
+  if (last < line.length) parts.push({ text: line.slice(last), highlight: false });
+  return parts.length ? parts : [{ text: line, highlight: false }];
 }
 
 function getTextVisualTopOffset(ctx: CanvasRenderingContext2D, fontSize: number, lineHeight: number) {
@@ -2784,7 +2983,8 @@ function buildSearchResults(objects: BoardObject[], query: string): SearchResult
 }
 
 function searchableTextForObject(object: BoardObject) {
-  const metadata = [object.label, object.note, object.type];
+  const metadataValues = object.metadata ? Object.values(object.metadata).filter((value) => typeof value === "string") as string[] : [];
+  const metadata = [object.label, object.note, object.type, ...metadataValues];
   if (object.type === "text") return [...metadata, object.text].filter(Boolean).join(" ");
   if (object.type === "shape") return [...metadata, object.shapeType, shapeAlias(object.shapeType)].filter(Boolean).join(" ");
   return [...metadata, "drawing", "stroke", "freehand"].filter(Boolean).join(" ");
@@ -2855,6 +3055,91 @@ function easeInOutCubic(value: number) {
 
 function lerp(start: number, end: number, t: number) {
   return start + (end - start) * t;
+}
+
+async function fetchInboxTodosFromApi() {
+  const response = await fetch("/api/scheduled-inbox/todos", { headers: { Accept: "application/json" } });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(typeof data.error === "string" ? data.error : "Could not load inbox todos.");
+  }
+  return Array.isArray(data.todos) ? data.todos as InboxTodo[] : [];
+}
+
+function loadInboxStatus(): InboxStatusState {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(INBOX_STATUS_STORAGE_KEY) ?? "{}") as Partial<InboxStatusState>;
+    return { done: parsed.done ?? {}, dismissed: parsed.dismissed ?? {} };
+  } catch {
+    return { done: {}, dismissed: {} };
+  }
+}
+
+function saveInboxStatus(status: InboxStatusState) {
+  localStorage.setItem(INBOX_STATUS_STORAGE_KEY, JSON.stringify(status));
+}
+
+function applyInboxStatus(todos: InboxTodo[], status: InboxStatusState) {
+  return todos.map((todo) => ({
+    ...todo,
+    status: status.dismissed[todo.id] ? "dismissed" as const : status.done[todo.id] ? "done" as const : todo.status,
+  }));
+}
+
+function visibleInboxTodos(todos: InboxTodo[]) {
+  return todos.filter((todo) => todo.status === "open");
+}
+
+function formatInboxTodoText(todo: InboxTodo) {
+  const detail = todo.subject || todo.contactName;
+  const header = `☐ ${todo.title}${detail ? ` — ${detail}` : ""}${todo.dueDate ? ` (${todo.dueDate})` : ""}`;
+  return [
+    header,
+    "",
+    "Why:",
+    todo.reason,
+    "",
+    "Action:",
+    todo.suggestedAction,
+    ...(todo.suggestedDraft ? ["", "Draft:", todo.suggestedDraft] : []),
+  ].join("\n");
+}
+
+function mockInboxTodos(): InboxTodo[] {
+  const now = new Date().toISOString();
+  return [
+    {
+      id: "mock-shawn-followup",
+      type: "follow_up",
+      title: "Follow up with Shawn Durkin",
+      contactName: "Shawn Durkin",
+      subject: "Pelican Products",
+      dueDate: "Today",
+      urgency: "high",
+      reason: "Important contact and follow-up window has passed.",
+      suggestedAction: "Send short follow-up asking if Pelican is looking for a mechanical engineering intern or co-op.",
+      suggestedDraft: "Hi Shawn, wanted to follow up quickly. I'm interested in learning whether Pelican is looking for a mechanical engineering intern or co-op. No rush, just wanted to stay on your radar.",
+      source: "scheduled_inbox",
+      status: "open",
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: "mock-prof-anderson-reply",
+      type: "professor",
+      title: "Reply to Prof. Anderson",
+      contactName: "Prof. Anderson",
+      subject: "REU application update",
+      dueDate: "Tomorrow",
+      urgency: "medium",
+      reason: "Needs a response soon.",
+      suggestedAction: "Reply with a concise update and ask for next steps.",
+      source: "scheduled_inbox",
+      status: "open",
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
 }
 
 function loadLibrary(): GreyboardLibrary {
