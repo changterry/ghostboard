@@ -42,6 +42,7 @@ type RotationOrigin = {
 
 type BaseObject = {
   id: string;
+  groupId?: string;
   color: string;
   rotation?: number;
   origin?: RotationOrigin;
@@ -226,6 +227,7 @@ function Ghostboard() {
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [inputGuideMode, setInputGuideMode] = useState<InputGuideMode>("mouse");
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [toast, setToast] = useState("");
   const [tick, setTick] = useState(0);
   runtimeBoardState = boardRef.current;
@@ -280,6 +282,11 @@ function Ghostboard() {
       }
 
       if (event.key === "Escape") {
+        if (contextMenu) {
+          event.preventDefault();
+          setContextMenu(null);
+          return;
+        }
         if (sidebarOpen || settingsOpen) {
           event.preventDefault();
           setSidebarOpen(false);
@@ -327,7 +334,7 @@ function Ghostboard() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [clearConfirmOpen, editor, settingsOpen, sidebarOpen]);
+  }, [clearConfirmOpen, contextMenu, editor, settingsOpen, sidebarOpen]);
 
   function forceUpdate() {
     setTick((value) => value + 1);
@@ -499,6 +506,33 @@ function Ghostboard() {
     }, 1300);
   }
 
+  function selectionIdsForObject(object: BoardObject, objects = boardRef.current.objects) {
+    if (!object.groupId) return [object.id];
+    return objects.filter((item) => item.groupId === object.groupId).map((item) => item.id);
+  }
+
+  function groupSelection() {
+    commitEditor();
+    const state = boardRef.current;
+    const selected = new Set(state.selectedIds);
+    if (selected.size < 2) {
+      setContextMenu(null);
+      return;
+    }
+    const before = cloneObjects(state.objects);
+    const groupId = createId();
+    const now = Date.now();
+    state.objects = state.objects.map((object) =>
+      selected.has(object.id) ? { ...object, groupId, updatedAt: now } : object,
+    );
+    pushHistory(before);
+    save();
+    setContextMenu(null);
+    showToast("Grouped");
+    requestRender();
+    forceUpdate();
+  }
+
   async function copySelectionToClipboard() {
     commitEditor();
     const selected = boardRef.current.objects.filter((object) => boardRef.current.selectedIds.includes(object.id));
@@ -558,8 +592,13 @@ function Ghostboard() {
       const parsed = JSON.parse(text.slice(CLIPBOARD_PREFIX.length)) as { objects?: BoardObject[] };
       if (!Array.isArray(parsed.objects) || !parsed.objects.length) return;
       const before = cloneObjects(boardRef.current.objects);
+      const groupIdMap = new Map<string, string>();
       const pasted = cloneObjects(parsed.objects).map((object) => {
         object.id = createId();
+        if (object.groupId) {
+          if (!groupIdMap.has(object.groupId)) groupIdMap.set(object.groupId, createId());
+          object.groupId = groupIdMap.get(object.groupId);
+        }
         object.createdAt = Date.now();
         object.updatedAt = Date.now();
         applyMove(object, object, 32, 32);
@@ -664,6 +703,8 @@ function Ghostboard() {
     const isMiddlePan = event.button === 1;
     const isRightErase = event.button === 2;
 
+    if (event.button === 0 && contextMenu) setContextMenu(null);
+
     if (editor) {
       event.preventDefault();
       commitEditor();
@@ -681,6 +722,15 @@ function Ghostboard() {
       event.preventDefault();
       toggleTextDrawTool();
       return;
+    }
+
+    if (isRightErase && state.selectedIds.length > 1) {
+      const hit = hitTest(world);
+      if (hit && state.selectedIds.includes(hit.id)) {
+        event.preventDefault();
+        setContextMenu({ x: screen.x, y: screen.y });
+        return;
+      }
     }
 
     if (isMiddlePan || state.currentTool === "pan") {
@@ -793,7 +843,7 @@ function Ghostboard() {
     if (hit) {
       cancelPendingSnap();
       commitEditor();
-      const selectedIds = state.selectedIds.includes(hit.id) ? state.selectedIds : [hit.id];
+      const selectedIds = state.selectedIds.includes(hit.id) ? state.selectedIds : selectionIdsForObject(hit, state.objects);
       state.selectedIds = selectedIds;
       forceUpdate();
       canvas.setPointerCapture(event.pointerId);
@@ -1165,6 +1215,14 @@ function Ghostboard() {
 
       {toast && <div className="toast" role="status">{toast}</div>}
 
+      {contextMenu && (
+        <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} role="menu">
+          <button type="button" role="menuitem" onClick={groupSelection}>
+            Group selected
+          </button>
+        </div>
+      )}
+
       <button className="menu-button" type="button" aria-label="Toggle tools" onClick={() => setSidebarOpen((open) => !open)}>
         <span />
         <span />
@@ -1390,6 +1448,7 @@ function Ghostboard() {
                 <span>Drag empty space = draw</span>
                 <span>Right-click drag = erase</span>
                 <span>Control + drag = multi-select</span>
+                <span>Right-click selection = group</span>
                 <span>Middle mouse drag = pan</span>
                 <span>Control + scroll = zoom</span>
                 <span>Shift + scroll = horizontal pan</span>
@@ -1402,6 +1461,7 @@ function Ghostboard() {
                 <span>Tap empty space = text</span>
                 <span>Press and drag = draw</span>
                 <span>Control + drag = multi-select</span>
+                <span>Right-click selection = group</span>
                 <span>Two-finger drag = pan</span>
                 <span>Pinch = zoom</span>
                 <span>Shift + two-finger scroll = horizontal pan</span>
