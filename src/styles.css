@@ -141,6 +141,8 @@ textarea {
   width: min(286px, calc(100vw - 24px));
   height: 100vh;
   padding: 62px 14px 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   color: var(--gb-sidebar-text, rgba(255, 255, 255, 0.92));
   background: var(--gb-sidebar-bg, rgba(20, 20, 20, 0.85));
   border-right: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 10%, transparent);
@@ -158,20 +160,24 @@ textarea {
   transition: transform 150ms ease;
 }
 
+.sidebar::-webkit-scrollbar {
+  width: 8px;
+}
+
+.sidebar::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--gb-ink, #fff) 18%, transparent);
+  border-radius: 999px;
+}
+
 .brand {
   display: grid;
   gap: 3px;
-  margin-bottom: 18px;
+  margin-bottom: 14px;
 }
 
 .brand strong {
   font-size: 18px;
   letter-spacing: 0;
-}
-
-.brand span {
-  color: var(--gb-subtle-text, rgba(255, 255, 255, 0.72));
-  font-size: 12px;
 }
 
 .tool-list {

@@ -129,6 +129,7 @@ type PendingSnap = {
 };
 
 const STORAGE_KEY = "ghostboard.state.v1";
+const LOCAL_CLIPBOARD_KEY = "greyboard.clipboard.v1";
 const CLIPBOARD_PREFIX = "greyboard/objects:";
 const CLIPBOARD_HTML_PREFIX = "greyboard-data:";
 const EMPTY_INTERACTION: Interaction = { type: "none" };
@@ -444,6 +445,7 @@ function Ghostboard() {
     const selected = boardRef.current.objects.filter((object) => boardRef.current.selectedIds.includes(object.id));
     if (!selected.length) return;
     const payload = `${CLIPBOARD_PREFIX}${JSON.stringify({ objects: selected })}`;
+    localStorage.setItem(LOCAL_CLIPBOARD_KEY, payload);
     try {
       const image = renderObjectsToPng(selected, boardRef.current.settings);
       if ("ClipboardItem" in window && image) {
@@ -456,8 +458,7 @@ function Ghostboard() {
         ]), 900);
         showToast("Copied to clipboard");
       } else {
-        await navigator.clipboard.writeText(payload);
-        showToast("Copied to clipboard");
+        showToast("Copied inside Greyboard");
       }
     } catch {
       try {
@@ -466,11 +467,10 @@ function Ghostboard() {
           await withTimeout(navigator.clipboard.write([new ClipboardItem({ "image/png": image.blob })]), 900);
           showToast("Copied to clipboard");
         } else {
-          await navigator.clipboard.writeText(payload);
-          showToast("Copied to clipboard");
+          showToast("Copied inside Greyboard");
         }
       } catch {
-        // Clipboard access can be denied outside trusted browser gestures.
+        showToast("Copied inside Greyboard");
       }
     }
   }
@@ -491,8 +491,9 @@ function Ghostboard() {
       }
       if (!text) text = await navigator.clipboard.readText();
     } catch {
-      return;
+      text = localStorage.getItem(LOCAL_CLIPBOARD_KEY) ?? "";
     }
+    if (!text) text = localStorage.getItem(LOCAL_CLIPBOARD_KEY) ?? "";
     if (!text.startsWith(CLIPBOARD_PREFIX)) return;
     try {
       const parsed = JSON.parse(text.slice(CLIPBOARD_PREFIX.length)) as { objects?: BoardObject[] };
@@ -895,6 +896,7 @@ function Ghostboard() {
       boardRef.current.selectedIds = boardRef.current.objects
         .filter((object) => rectsIntersect(expandRect(objectBounds(object), 6), rect))
         .map((object) => object.id);
+      if (boardRef.current.selectedIds.length) boardRef.current.currentTool = "select";
       save();
     }
 
@@ -1097,7 +1099,6 @@ function Ghostboard() {
       <aside className={`sidebar ${sidebarOpen ? "is-open" : ""}`} aria-hidden={!sidebarOpen}>
         <div className="brand">
           <strong>Greyboard</strong>
-          <span>Minimal. Distraction-free.</span>
         </div>
 
         <div className="tool-list" role="toolbar" aria-label="Greyboard tools">
@@ -1899,7 +1900,72 @@ function applyResize(object: BoardObject, original: BoardObject, handle: string,
       object.height = height;
     }
     object.updatedAt = Date.now();
+  } else if (object.type === "stroke" && original.type === "stroke") {
+    const transform = resizeTransform(original.bbox, handle, dx, dy, 8);
+    object.points = original.points.map((point) => transformPointInRect(point, original.bbox, transform.next));
+    object.bbox = pointsBounds(object.points);
+    object.origin = original.origin ? transformOriginInRect(original.origin, original.bbox, transform.next) : centerOrigin(object.bbox);
+    object.rawStartPoint = original.rawStartPoint ? transformPointInRect(original.rawStartPoint, original.bbox, transform.next) : undefined;
+    object.rawEndPoint = original.rawEndPoint ? transformPointInRect(original.rawEndPoint, original.bbox, transform.next) : undefined;
+    object.rawPoints = original.rawPoints?.map((point) => transformPointInRect(point, original.bbox, transform.next));
+    object.updatedAt = Date.now();
+  } else if (object.type === "shape" && original.type === "shape") {
+    const transform = resizeTransform(original.bbox, handle, dx, dy, 8);
+    object.geometry = resizeGeometry(original.geometry, original.bbox, transform.next);
+    object.bbox = shapeBounds(object.shapeType, object.geometry);
+    object.origin = original.origin ? transformOriginInRect(original.origin, original.bbox, transform.next) : centerOrigin(object.bbox);
+    object.sourceStartPoint = original.sourceStartPoint ? transformPointInRect(original.sourceStartPoint, original.bbox, transform.next) : undefined;
+    object.sourceEndPoint = original.sourceEndPoint ? transformPointInRect(original.sourceEndPoint, original.bbox, transform.next) : undefined;
+    object.rawStartPoint = original.rawStartPoint ? transformPointInRect(original.rawStartPoint, original.bbox, transform.next) : undefined;
+    object.rawEndPoint = original.rawEndPoint ? transformPointInRect(original.rawEndPoint, original.bbox, transform.next) : undefined;
+    object.rawPoints = original.rawPoints?.map((point) => transformPointInRect(point, original.bbox, transform.next));
+    object.updatedAt = Date.now();
   }
+}
+
+function resizeTransform(rect: Rect, handle: string, dx: number, dy: number, minSize: number) {
+  let x = rect.x;
+  let y = rect.y;
+  let width = rect.width;
+  let height = rect.height;
+  if (handle.includes("e")) width = Math.max(minSize, rect.width + dx);
+  if (handle.includes("s")) height = Math.max(minSize, rect.height + dy);
+  if (handle.includes("w")) {
+    width = Math.max(minSize, rect.width - dx);
+    x = rect.x + (rect.width - width);
+  }
+  if (handle.includes("n")) {
+    height = Math.max(minSize, rect.height - dy);
+    y = rect.y + (rect.height - height);
+  }
+  return { next: { x, y, width, height } };
+}
+
+function transformPointInRect(point: Point, from: Rect, to: Rect): Point {
+  const nx = from.width ? (point.x - from.x) / from.width : 0.5;
+  const ny = from.height ? (point.y - from.y) / from.height : 0.5;
+  return { ...point, x: to.x + nx * to.width, y: to.y + ny * to.height };
+}
+
+function transformOriginInRect(origin: RotationOrigin, from: Rect, to: Rect): RotationOrigin {
+  const point = transformPointInRect(origin, from, to);
+  return { ...origin, x: point.x, y: point.y };
+}
+
+function resizeGeometry(geometry: ShapeGeometry, from: Rect, to: Rect): ShapeGeometry {
+  if ("start" in geometry && "end" in geometry) {
+    return {
+      start: transformPointInRect(geometry.start, from, to),
+      end: transformPointInRect(geometry.end, from, to),
+    };
+  }
+  if ("center" in geometry) {
+    const center = transformPointInRect(geometry.center, from, to);
+    const sx = to.width / Math.max(from.width, 1);
+    const sy = to.height / Math.max(from.height, 1);
+    return { center, rx: Math.max(geometry.rx * sx, 4), ry: Math.max(geometry.ry * sy, 4) };
+  }
+  return { points: geometry.points.map((point) => transformPointInRect(point, from, to)) };
 }
 
 function moveGeometry(geometry: ShapeGeometry, dx: number, dy: number): ShapeGeometry {
