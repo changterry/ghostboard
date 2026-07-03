@@ -6,7 +6,7 @@ type Tool = "select" | "text" | "draw" | "erase" | "pan" | "shape";
 type ShapeKind = "line" | "arrow" | "ellipse" | "rect" | "triangle" | "curve";
 type ThemeMode = "dark" | "light";
 type InputGuideMode = "mouse" | "touchpad";
-type SidebarAction = Tool | "clear" | "settings" | "find";
+type SidebarAction = Tool | "clear" | "settings" | "find" | "library";
 
 type Point = {
   x: number;
@@ -109,6 +109,22 @@ type BoardState = {
   settings: Settings;
 };
 
+type GreyboardBoard = {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  objects: BoardObject[];
+  viewport: Viewport;
+  settings: Settings;
+  inputGuideMode?: InputGuideMode;
+};
+
+type GreyboardLibrary = {
+  activeBoardId: string;
+  boards: Record<string, GreyboardBoard>;
+};
+
 type Interaction =
   | { type: "none" }
   | { type: "pending-canvas"; pointerId: number; startScreen: Point; startWorld: Point; startedAt: number; forceAngleSnap: boolean }
@@ -157,6 +173,7 @@ type SmartFindState = {
 };
 
 const STORAGE_KEY = "ghostboard.state.v1";
+const GREYBOARD_LIBRARY_STORAGE_KEY = "greyboard.library.v1";
 const LOCAL_CLIPBOARD_KEY = "greyboard.clipboard.v1";
 const CLIPBOARD_PREFIX = "greyboard/objects:";
 const CLIPBOARD_HTML_PREFIX = "greyboard-data:";
@@ -224,6 +241,7 @@ const TOOL_LABELS: Array<{ id: SidebarAction; label: string; hint: string; icon:
   { id: "erase", label: "Erase", hint: "Delete whole strokes", icon: "⌫" },
   { id: "shape", label: "Smart Shape", hint: "Snap rough shapes", icon: "△" },
   { id: "pan", label: "Pan", hint: "Drag the board", icon: "" },
+  { id: "library", label: "Library", hint: "Saved Greyboards", icon: "G" },
   { id: "find", label: "Smart Find", hint: "Find old text and maps", icon: "F" },
   { id: "clear", label: "Clear Board", hint: "Remove everything", icon: "⌧" },
   { id: "settings", label: "Settings", hint: "Snap and appearance", icon: "⚙" },
@@ -231,7 +249,8 @@ const TOOL_LABELS: Array<{ id: SidebarAction; label: string; hint: string; icon:
 
 function Ghostboard() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const boardRef = useRef<BoardState>(loadState());
+  const libraryRef = useRef<GreyboardLibrary>(loadLibrary());
+  const boardRef = useRef<BoardState>(stateFromBoard(activeLibraryBoard(libraryRef.current)));
   const interactionRef = useRef<Interaction>(EMPTY_INTERACTION);
   const historyRef = useRef<BoardObject[][]>([]);
   const redoRef = useRef<BoardObject[][]>([]);
@@ -246,11 +265,13 @@ function Ghostboard() {
   const touchGestureRef = useRef<TouchGesture | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
-  const [inputGuideMode, setInputGuideMode] = useState<InputGuideMode>("mouse");
+  const [inputGuideMode, setInputGuideMode] = useState<InputGuideMode>(activeLibraryBoard(libraryRef.current).inputGuideMode ?? "mouse");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [smartFind, setSmartFind] = useState<SmartFindState>(SMART_FIND_EMPTY);
+  const [libraryTick, setLibraryTick] = useState(0);
   const [toast, setToast] = useState("");
   const [tick, setTick] = useState(0);
   runtimeBoardState = boardRef.current;
@@ -310,7 +331,18 @@ function Ghostboard() {
         return;
       }
 
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "g") {
+        event.preventDefault();
+        openLibrary();
+        return;
+      }
+
       if (event.key === "Escape") {
+        if (libraryOpen) {
+          event.preventDefault();
+          setLibraryOpen(false);
+          return;
+        }
         if (smartFind.isOpen) {
           event.preventDefault();
           closeSmartFind();
@@ -361,12 +393,6 @@ function Ghostboard() {
         return;
       }
 
-      if (smartFind.isOpen && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "g") {
-        event.preventDefault();
-        cycleSmartFind(event.shiftKey ? -1 : 1);
-        return;
-      }
-
       if (event.key === "Delete" || event.key === "Backspace") {
         deleteSelection();
       }
@@ -374,12 +400,25 @@ function Ghostboard() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [clearConfirmOpen, contextMenu, editor, settingsOpen, sidebarOpen, smartFind]);
+  }, [clearConfirmOpen, contextMenu, editor, libraryOpen, settingsOpen, sidebarOpen, smartFind]);
 
   useEffect(() => {
     if (!smartFind.isOpen) return;
     smartFindInputRef.current?.focus({ preventScroll: true });
   }, [smartFind.isOpen]);
+
+  useEffect(() => {
+    const persist = () => save();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") persist();
+    };
+    window.addEventListener("beforeunload", persist);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("beforeunload", persist);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [inputGuideMode]);
 
   function forceUpdate() {
     setTick((value) => value + 1);
@@ -396,6 +435,91 @@ function Ghostboard() {
   function save() {
     const { objects, viewport, settings } = boardRef.current;
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ objects, viewport, settings }));
+    const library = libraryRef.current;
+    const active = activeLibraryBoard(library);
+    const updated: GreyboardBoard = {
+      ...active,
+      objects: cloneObjects(objects),
+      viewport: { ...viewport },
+      settings: { ...settings },
+      inputGuideMode,
+      updatedAt: new Date().toISOString(),
+    };
+    library.boards[updated.id] = updated;
+    library.activeBoardId = updated.id;
+    saveLibrary(library);
+  }
+
+  function openLibrary() {
+    commitEditor();
+    setSidebarOpen(false);
+    setSettingsOpen(false);
+    setContextMenu(null);
+    closeSmartFind();
+    save();
+    setLibraryOpen(true);
+  }
+
+  function openBoard(boardId: string) {
+    save();
+    const board = libraryRef.current.boards[boardId];
+    if (!board) return;
+    libraryRef.current.activeBoardId = boardId;
+    boardRef.current = stateFromBoard(board);
+    setInputGuideMode(board.inputGuideMode ?? "mouse");
+    saveLibrary(libraryRef.current);
+    setLibraryOpen(false);
+    setSidebarOpen(false);
+    closeSmartFind();
+    requestRender();
+    forceUpdate();
+    setLibraryTick((value) => value + 1);
+  }
+
+  function createNewBoard() {
+    save();
+    const board = createLibraryBoard("Untitled Greyboard");
+    libraryRef.current.boards[board.id] = board;
+    libraryRef.current.activeBoardId = board.id;
+    boardRef.current = stateFromBoard(board);
+    setInputGuideMode(board.inputGuideMode ?? "mouse");
+    saveLibrary(libraryRef.current);
+    setLibraryOpen(false);
+    requestRender();
+    forceUpdate();
+    setLibraryTick((value) => value + 1);
+  }
+
+  function renameBoard(boardId: string, title: string) {
+    const board = libraryRef.current.boards[boardId];
+    if (!board) return;
+    board.title = title.trim() || "Untitled Greyboard";
+    board.updatedAt = new Date().toISOString();
+    saveLibrary(libraryRef.current);
+    setLibraryTick((value) => value + 1);
+  }
+
+  function deleteBoard(boardId: string) {
+    const board = libraryRef.current.boards[boardId];
+    if (!board) return;
+    if (!window.confirm(`Delete "${board.title}"?`)) return;
+    delete libraryRef.current.boards[boardId];
+    const remaining = Object.values(libraryRef.current.boards);
+    if (!remaining.length) {
+      const next = createLibraryBoard("Untitled Greyboard");
+      libraryRef.current.boards[next.id] = next;
+      libraryRef.current.activeBoardId = next.id;
+      boardRef.current = stateFromBoard(next);
+      setInputGuideMode(next.inputGuideMode ?? "mouse");
+    } else if (libraryRef.current.activeBoardId === boardId) {
+      libraryRef.current.activeBoardId = remaining[0].id;
+      boardRef.current = stateFromBoard(remaining[0]);
+      setInputGuideMode(remaining[0].inputGuideMode ?? "mouse");
+    }
+    saveLibrary(libraryRef.current);
+    requestRender();
+    forceUpdate();
+    setLibraryTick((value) => value + 1);
   }
 
   function setTool(tool: Tool) {
@@ -1334,6 +1458,9 @@ function Ghostboard() {
   const canGroupSelection = contextSelectedObjects.length > 1;
   const canUngroupSelection = contextSelectedObjects.some((object) => object.groupId);
   const activeSearchResult = smartFind.results[smartFind.activeIndex];
+  void libraryTick;
+  const currentBoard = activeLibraryBoard(libraryRef.current);
+  const libraryBoards = Object.values(libraryRef.current.boards).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   const theme = currentTheme(boardRef.current.settings);
   return (
@@ -1438,6 +1565,44 @@ function Ghostboard() {
         </div>
       )}
 
+      {libraryOpen && (
+        <div className="library-backdrop" role="presentation" onMouseDown={() => setLibraryOpen(false)}>
+          <section className="library-panel" role="dialog" aria-modal="true" aria-label="Greyboard Library" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="library-header">
+              <div>
+                <strong>Library</strong>
+                <span>{libraryBoards.length} saved Greyboard{libraryBoards.length === 1 ? "" : "s"}</span>
+              </div>
+              <div className="library-actions">
+                <button type="button" onClick={createNewBoard}>New Board</button>
+                <button type="button" aria-label="Close Library" onClick={() => setLibraryOpen(false)}>×</button>
+              </div>
+            </div>
+            <div className="library-grid">
+              {libraryBoards.map((board) => (
+                <article key={board.id} className={`library-card ${board.id === libraryRef.current.activeBoardId ? "is-active" : ""}`}>
+                  <button type="button" className="library-preview" onClick={() => openBoard(board.id)}>
+                    {board.objects.length ? board.objects.slice(0, 3).map((object) => (
+                      <span key={object.id}>{previewTextForObject(object)}</span>
+                    )) : <span>Blank board</span>}
+                  </button>
+                  <input
+                    value={board.title}
+                    aria-label="Board title"
+                    onChange={(event) => renameBoard(board.id, event.target.value)}
+                  />
+                  <small>Updated {formatBoardTime(board.updatedAt)}</small>
+                  <div className="library-card-actions">
+                    <button type="button" onClick={() => openBoard(board.id)}>Open</button>
+                    <button type="button" onClick={() => deleteBoard(board.id)}>Delete</button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        </div>
+      )}
+
       <button className="menu-button" type="button" aria-label="Toggle tools" onClick={() => setSidebarOpen((open) => !open)}>
         <span />
         <span />
@@ -1452,6 +1617,7 @@ function Ghostboard() {
       <aside className={`sidebar ${sidebarOpen ? "is-open" : ""}`} aria-hidden={!sidebarOpen}>
         <div className="brand">
           <strong>Greyboard</strong>
+          <span>{currentBoard.title}</span>
         </div>
 
         <div className="tool-list" role="toolbar" aria-label="Greyboard tools">
@@ -1463,6 +1629,7 @@ function Ghostboard() {
               onClick={() => {
                 if (tool.id === "clear") clearBoard();
                 else if (tool.id === "settings") setSettingsOpen((open) => !open);
+                else if (tool.id === "library") openLibrary();
                 else if (tool.id === "find") openSmartFind();
                 else setTool(tool.id);
               }}
@@ -1650,7 +1817,13 @@ function Ghostboard() {
                 role="tab"
                 aria-selected={inputGuideMode === mode}
                 className={inputGuideMode === mode ? "is-active" : ""}
-                onClick={() => setInputGuideMode(mode)}
+                onClick={() => {
+                  setInputGuideMode(mode);
+                  const board = activeLibraryBoard(libraryRef.current);
+                  board.inputGuideMode = mode;
+                  board.updatedAt = new Date().toISOString();
+                  saveLibrary(libraryRef.current);
+                }}
               >
                 {mode === "mouse" ? "Mouse" : "Touchpad"}
               </button>
@@ -1669,6 +1842,7 @@ function Ghostboard() {
                 <span>Control + scroll = zoom</span>
                 <span>Shift + scroll = horizontal pan</span>
                 <span>Smart Find: Control F</span>
+                <span>Library: Control G</span>
                 <span>Copy image / paste: Control C and Control V</span>
                 <span>Undo / redo: Control Z and Control Y</span>
                 <span>Double-click text to edit</span>
@@ -1683,6 +1857,7 @@ function Ghostboard() {
                 <span>Pinch = zoom</span>
                 <span>Shift + two-finger scroll = horizontal pan</span>
                 <span>Smart Find: Command F or sidebar</span>
+                <span>Library: Command G or sidebar</span>
                 <span>Copy image / paste: Control C and Control V</span>
                 <span>Undo / redo: Control Z and Control Y</span>
                 <span>Double-tap text to edit</span>
@@ -2593,6 +2768,97 @@ function easeInOutCubic(value: number) {
 
 function lerp(start: number, end: number, t: number) {
   return start + (end - start) * t;
+}
+
+function loadLibrary(): GreyboardLibrary {
+  try {
+    const raw = localStorage.getItem(GREYBOARD_LIBRARY_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<GreyboardLibrary>;
+      const boards = parsed.boards ?? {};
+      const ids = Object.keys(boards);
+      if (ids.length) {
+        const activeBoardId = parsed.activeBoardId && boards[parsed.activeBoardId] ? parsed.activeBoardId : ids[0];
+        return { activeBoardId, boards: normalizeLibraryBoards(boards) };
+      }
+    }
+  } catch {
+    // Fall through to migration/default board.
+  }
+
+  const imported = loadState();
+  if (imported.objects.length) {
+    const board = createLibraryBoard("Imported Greyboard", imported);
+    const library = { activeBoardId: board.id, boards: { [board.id]: board } };
+    saveLibrary(library);
+    return library;
+  }
+
+  const board = createLibraryBoard("Untitled Greyboard");
+  const library = { activeBoardId: board.id, boards: { [board.id]: board } };
+  saveLibrary(library);
+  return library;
+}
+
+function normalizeLibraryBoards(boards: Record<string, GreyboardBoard>) {
+  return Object.fromEntries(Object.entries(boards).map(([id, board]) => {
+    const normalized: GreyboardBoard = {
+      id: board.id || id,
+      title: board.title?.trim() || "Untitled Greyboard",
+      createdAt: board.createdAt || new Date().toISOString(),
+      updatedAt: board.updatedAt || new Date().toISOString(),
+      objects: normalizeObjects(Array.isArray(board.objects) ? board.objects : []),
+      viewport: { ...DEFAULT_STATE.viewport, ...(board.viewport ?? {}) },
+      settings: { ...DEFAULT_STATE.settings, ...(board.settings ?? {}) },
+      inputGuideMode: board.inputGuideMode === "touchpad" ? "touchpad" : "mouse",
+    };
+    return [normalized.id, normalized];
+  }));
+}
+
+function activeLibraryBoard(library: GreyboardLibrary) {
+  return library.boards[library.activeBoardId] ?? Object.values(library.boards)[0] ?? createLibraryBoard("Untitled Greyboard");
+}
+
+function createLibraryBoard(title: string, state = cloneState(DEFAULT_STATE)): GreyboardBoard {
+  const now = new Date().toISOString();
+  return {
+    id: createId(),
+    title: title.trim() || "Untitled Greyboard",
+    createdAt: now,
+    updatedAt: now,
+    objects: cloneObjects(state.objects),
+    viewport: { ...state.viewport },
+    settings: { ...state.settings },
+    inputGuideMode: "mouse",
+  };
+}
+
+function stateFromBoard(board: GreyboardBoard): BoardState {
+  return {
+    ...cloneState(DEFAULT_STATE),
+    objects: normalizeObjects(board.objects),
+    viewport: { ...DEFAULT_STATE.viewport, ...board.viewport },
+    settings: { ...DEFAULT_STATE.settings, ...(board.settings ?? {}) },
+    selectedIds: [],
+    currentTool: "text",
+  };
+}
+
+function saveLibrary(library: GreyboardLibrary) {
+  localStorage.setItem(GREYBOARD_LIBRARY_STORAGE_KEY, JSON.stringify(library));
+}
+
+function previewTextForObject(object: BoardObject) {
+  if (object.type === "text") return object.text.split("\n").find((line) => line.trim())?.trim().slice(0, 44) || "Text";
+  if (object.type === "shape") return object.shapeType;
+  return "drawing";
+}
+
+function formatBoardTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "just now";
+  return date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
 function loadState(): BoardState {

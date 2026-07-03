@@ -300,6 +300,135 @@ textarea {
   outline: 0;
 }
 
+.library-backdrop {
+  position: fixed;
+  z-index: 10;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: color-mix(in srgb, var(--gb-bg, #000) 72%, transparent);
+}
+
+.library-panel {
+  width: min(860px, calc(100vw - 28px));
+  max-height: min(720px, calc(100vh - 36px));
+  overflow: auto;
+  padding: 16px;
+  color: var(--gb-sidebar-text, rgba(255, 255, 255, 0.92));
+  background: var(--gb-sidebar-bg, rgba(20, 20, 20, 0.9));
+  border: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 14%, transparent);
+  border-radius: 14px;
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.32);
+  backdrop-filter: blur(12px);
+}
+
+.library-header,
+.library-actions,
+.library-card-actions {
+  display: flex;
+  align-items: center;
+}
+
+.library-header {
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.library-header strong,
+.library-header span {
+  display: block;
+}
+
+.library-header strong {
+  font-size: 19px;
+}
+
+.library-header span,
+.library-card small {
+  color: var(--gb-subtle-text, rgba(255, 255, 255, 0.58));
+  font-size: 12px;
+}
+
+.library-actions,
+.library-card-actions {
+  gap: 8px;
+}
+
+.library-actions button,
+.library-card-actions button {
+  min-height: 32px;
+  padding: 6px 10px;
+  color: var(--gb-sidebar-text, rgba(255, 255, 255, 0.92));
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 16%, transparent);
+  border-radius: 9px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.library-actions button:hover,
+.library-card-actions button:hover,
+.library-actions button:focus-visible,
+.library-card-actions button:focus-visible {
+  background: var(--gb-hover-bg, rgba(255, 255, 255, 0.08));
+  outline: 0;
+}
+
+.library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.library-card {
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  background: var(--gb-panel-bg, rgba(255, 255, 255, 0.055));
+  border: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 10%, transparent);
+  border-radius: 12px;
+}
+
+.library-card.is-active {
+  border-color: color-mix(in srgb, var(--gb-ink, #fff) 30%, transparent);
+}
+
+.library-preview {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-height: 112px;
+  padding: 10px;
+  color: var(--gb-subtle-text, rgba(255, 255, 255, 0.58));
+  text-align: left;
+  background: var(--gb-bg, #000);
+  border: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 12%, transparent);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.library-preview span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-card input {
+  width: 100%;
+  color: var(--gb-sidebar-text, rgba(255, 255, 255, 0.92));
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 12%, transparent);
+  outline: 0;
+  font-weight: 650;
+}
+
+.library-card input:focus {
+  border-bottom-color: color-mix(in srgb, var(--gb-ink, #fff) 30%, transparent);
+}
+
 .sidebar {
   position: fixed;
   z-index: 4;
