@@ -722,7 +722,39 @@ function Ghostboard() {
     pushHistory(before);
     save();
     setContextMenu(null);
-    showToast("Grouped");
+    showToast("Grouped - they move together now");
+    requestRender();
+    forceUpdate();
+  }
+
+  function ungroupSelection() {
+    commitEditor();
+    const state = boardRef.current;
+    const selected = new Set(state.selectedIds);
+    const groupIds = new Set(
+      state.objects
+        .filter((object) => selected.has(object.id) && object.groupId)
+        .map((object) => object.groupId as string),
+    );
+    if (!groupIds.size) {
+      setContextMenu(null);
+      return;
+    }
+    const before = cloneObjects(state.objects);
+    const now = Date.now();
+    const ungroupedIds = state.objects
+      .filter((object) => selected.has(object.id) || (object.groupId && groupIds.has(object.groupId)))
+      .map((object) => object.id);
+    state.objects = state.objects.map((object) =>
+      object.groupId && groupIds.has(object.groupId)
+        ? { ...object, groupId: undefined, updatedAt: now }
+        : object,
+    );
+    state.selectedIds = ungroupedIds;
+    pushHistory(before);
+    save();
+    setContextMenu(null);
+    showToast("Ungrouped - pieces are free");
     requestRender();
     forceUpdate();
   }
@@ -743,7 +775,7 @@ function Ghostboard() {
             "image/png": image.blob,
           }),
         ]), 900);
-        showToast("Copied to clipboard");
+        showToast("Copied - ready to drop anywhere");
       } else {
         showToast("Copied inside Greyboard");
       }
@@ -752,7 +784,7 @@ function Ghostboard() {
         const image = renderObjectsToPng(selected, boardRef.current.settings);
         if ("ClipboardItem" in window && image) {
           await withTimeout(navigator.clipboard.write([new ClipboardItem({ "image/png": image.blob })]), 900);
-          showToast("Copied to clipboard");
+          showToast("Copied - ready to drop anywhere");
         } else {
           showToast("Copied inside Greyboard");
         }
@@ -1425,6 +1457,11 @@ function Ghostboard() {
   const isGuidedJournal = boardRef.current.mode === "guidedJournal";
   const showJournalPlus = isGuidedJournal && !editor && !journalLauncherOpen && boardRef.current.objects.length === 0;
   const allJournalSectionsSelected = journalSectionSelection.includes("All");
+  const contextSelectedObjects = contextMenu
+    ? boardRef.current.objects.filter((object) => boardRef.current.selectedIds.includes(object.id))
+    : [];
+  const canGroupSelection = contextSelectedObjects.length > 1;
+  const canUngroupSelection = contextSelectedObjects.some((object) => object.groupId);
 
   const theme = currentTheme(boardRef.current.settings);
   return (
@@ -1473,9 +1510,19 @@ function Ghostboard() {
 
       {contextMenu && (
         <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} role="menu">
-          <button type="button" role="menuitem" onClick={groupSelection}>
-            Group selected
-          </button>
+          <div className="context-menu-title">Selection</div>
+          {canGroupSelection && (
+            <button type="button" role="menuitem" onClick={groupSelection}>
+              <strong>Group together</strong>
+              <span>Move these as one</span>
+            </button>
+          )}
+          {canUngroupSelection && (
+            <button type="button" role="menuitem" onClick={ungroupSelection}>
+              <strong>Ungroup</strong>
+              <span>Let the pieces move alone</span>
+            </button>
+          )}
         </div>
       )}
 

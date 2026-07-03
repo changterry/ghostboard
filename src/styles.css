@@ -148,15 +148,17 @@ textarea {
   position: fixed;
   z-index: 8;
   left: 50%;
-  bottom: 28px;
-  padding: 8px 12px;
+  bottom: 30px;
+  max-width: min(460px, calc(100vw - 32px));
+  padding: 13px 18px;
   color: var(--gb-sidebar-text, rgba(255, 255, 255, 0.92));
-  background: var(--gb-sidebar-bg, rgba(20, 20, 20, 0.85));
-  border: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 10%, transparent);
+  background: color-mix(in srgb, var(--gb-sidebar-bg, rgba(20, 20, 20, 0.9)) 88%, var(--gb-ink, #fff) 12%);
+  border: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 18%, transparent);
   border-radius: 999px;
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.18);
-  font-size: 12px;
-  line-height: 1;
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.26), 0 0 24px color-mix(in srgb, var(--gb-ink, #fff) 8%, transparent);
+  font-family: "Segoe Print", "Comic Sans MS", cursive;
+  font-size: 15px;
+  line-height: 1.22;
   pointer-events: none;
   transform: translateX(-50%);
 }
@@ -164,31 +166,54 @@ textarea {
 .context-menu {
   position: fixed;
   z-index: 9;
-  min-width: 136px;
-  padding: 5px;
+  min-width: 218px;
+  padding: 9px;
   color: var(--gb-sidebar-text, rgba(255, 255, 255, 0.92));
-  background: var(--gb-sidebar-bg, rgba(20, 20, 20, 0.9));
-  border: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 14%, transparent);
-  border-radius: 8px;
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.22);
+  background: color-mix(in srgb, var(--gb-sidebar-bg, rgba(20, 20, 20, 0.9)) 92%, var(--gb-ink, #fff) 8%);
+  border: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 18%, transparent);
+  border-radius: 14px;
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.28);
+}
+
+.context-menu-title {
+  padding: 4px 8px 8px;
+  color: var(--gb-subtle-text, rgba(255, 255, 255, 0.58));
+  font-size: 11px;
+  letter-spacing: 0;
 }
 
 .context-menu button {
+  display: grid;
+  gap: 2px;
   width: 100%;
-  min-height: 30px;
-  padding: 5px 9px;
+  min-height: 52px;
+  padding: 9px 10px;
   color: inherit;
   text-align: left;
   background: transparent;
   border: 0;
-  border-radius: 6px;
-  font-size: 12px;
+  border-radius: 10px;
   cursor: pointer;
+}
+
+.context-menu button strong,
+.context-menu button span {
+  display: block;
+}
+
+.context-menu button strong {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.context-menu button span {
+  color: var(--gb-subtle-text, rgba(255, 255, 255, 0.58));
+  font-size: 12px;
 }
 
 .context-menu button:hover,
 .context-menu button:focus-visible {
-  background: var(--gb-hover-bg, rgba(255, 255, 255, 0.08));
+  background: color-mix(in srgb, var(--gb-hover-bg, rgba(255, 255, 255, 0.08)) 82%, var(--gb-ink, #fff) 6%);
   outline: 0;
 }
 
