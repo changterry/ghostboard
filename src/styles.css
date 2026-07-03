@@ -482,6 +482,48 @@ textarea {
   font-size: 11px;
 }
 
+.board-title-button,
+.board-title-input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  color: var(--gb-sidebar-text, rgba(255, 255, 255, 0.92));
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  outline: 0;
+  font-size: 12px;
+}
+
+.board-title-button {
+  cursor: text;
+}
+
+.board-title-button:hover,
+.board-title-button:focus-visible,
+.board-title-input:focus {
+  border-bottom-color: color-mix(in srgb, var(--gb-ink, #fff) 18%, transparent);
+}
+
+.save-status {
+  width: fit-content;
+  margin-top: 3px;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 8%, transparent);
+  border-radius: 999px;
+  font-size: 10px;
+}
+
+.save-status-saving {
+  color: color-mix(in srgb, var(--gb-ink, #fff) 78%, transparent);
+}
+
+.save-status-offline,
+.save-status-error {
+  color: #d8c900;
+}
+
 .tool-list {
   display: grid;
   gap: 6px;
@@ -658,20 +700,31 @@ textarea {
 
 .inbox-item {
   display: grid;
-  gap: 3px;
+  gap: 4px;
+  padding: 5px 0;
 }
 
 .inbox-item-main {
-  justify-content: space-between;
-  gap: 8px;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  display: grid;
+  align-items: baseline;
+  gap: 7px;
   width: 100%;
   padding: 0;
   text-align: left;
 }
 
-.inbox-item-main span::before {
-  content: "- ";
-  color: var(--gb-subtle-text, rgba(255, 255, 255, 0.58));
+.inbox-item-main b {
+  color: color-mix(in srgb, var(--gb-ink, #fff) 62%, transparent);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+}
+
+.inbox-item-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .inbox-item-main em {
@@ -684,6 +737,43 @@ textarea {
 .inbox-item small {
   color: var(--gb-subtle-text, rgba(255, 255, 255, 0.58));
   line-height: 1.25;
+}
+
+.inbox-state,
+.setup-notes,
+.inbox-item-expanded {
+  display: grid;
+  gap: 6px;
+  color: var(--gb-subtle-text, rgba(255, 255, 255, 0.58));
+}
+
+.inbox-state {
+  padding: 8px 0;
+}
+
+.inbox-state strong,
+.inbox-item-expanded strong {
+  color: var(--gb-sidebar-text, rgba(255, 255, 255, 0.92));
+}
+
+.setup-notes {
+  padding: 8px;
+  background: var(--gb-panel-bg, rgba(255, 255, 255, 0.055));
+  border: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 10%, transparent);
+  border-radius: 8px;
+}
+
+.setup-notes code {
+  color: var(--gb-sidebar-text, rgba(255, 255, 255, 0.92));
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+}
+
+.inbox-item-expanded {
+  padding: 8px;
+  background: var(--gb-panel-bg, rgba(255, 255, 255, 0.055));
+  border: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 10%, transparent);
+  border-radius: 8px;
 }
 
 .inbox-item-actions {

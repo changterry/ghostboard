@@ -9,6 +9,8 @@ type InputGuideMode = "mouse" | "touchpad";
 type SidebarAction = Tool | "clear" | "settings" | "find" | "library";
 type InboxUrgency = "low" | "medium" | "high";
 type InboxStatus = "open" | "done" | "dismissed";
+type SaveStatus = "saved" | "saving" | "offline" | "error";
+type InboxErrorCode = "config_missing" | "error" | "";
 
 type Point = {
   x: number;
@@ -200,6 +202,7 @@ type InboxState = {
   todos: InboxTodo[];
   loading: boolean;
   error: string;
+  errorCode: InboxErrorCode;
   lastUpdated?: string;
 };
 
@@ -310,9 +313,14 @@ function Ghostboard() {
   const [inputGuideMode, setInputGuideMode] = useState<InputGuideMode>(activeLibraryBoard(libraryRef.current).inputGuideMode ?? "mouse");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [smartFind, setSmartFind] = useState<SmartFindState>(SMART_FIND_EMPTY);
-  const [inbox, setInbox] = useState<InboxState>({ todos: [], loading: true, error: "" });
+  const [inbox, setInbox] = useState<InboxState>({ todos: [], loading: true, error: "", errorCode: "" });
   const [inboxStatus, setInboxStatus] = useState<InboxStatusState>(loadInboxStatus());
+  const [expandedInboxId, setExpandedInboxId] = useState<string | null>(null);
+  const [setupNotesOpen, setSetupNotesOpen] = useState(false);
   const [libraryTick, setLibraryTick] = useState(0);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>(navigator.onLine ? "saved" : "offline");
+  const [titleDraft, setTitleDraft] = useState(activeLibraryBoard(libraryRef.current).title);
+  const [titleEditing, setTitleEditing] = useState(false);
   const [toast, setToast] = useState("");
   const [tick, setTick] = useState(0);
   runtimeBoardState = boardRef.current;
@@ -457,10 +465,16 @@ function Ghostboard() {
     const onVisibilityChange = () => {
       if (document.visibilityState === "hidden") persist();
     };
+    const onOnline = () => setSaveStatus("saved");
+    const onOffline = () => setSaveStatus("offline");
     window.addEventListener("beforeunload", persist);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       window.removeEventListener("beforeunload", persist);
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [inputGuideMode]);
@@ -478,38 +492,49 @@ function Ghostboard() {
   }
 
   function save() {
-    const { objects, viewport, settings } = boardRef.current;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ objects, viewport, settings }));
-    const library = libraryRef.current;
-    const active = activeLibraryBoard(library);
-    const updated: GreyboardBoard = {
-      ...active,
-      objects: cloneObjects(objects),
-      viewport: { ...viewport },
-      settings: { ...settings },
-      inputGuideMode,
-      updatedAt: new Date().toISOString(),
-    };
-    library.boards[updated.id] = updated;
-    library.activeBoardId = updated.id;
-    saveLibrary(library);
+    if (!navigator.onLine) setSaveStatus("offline");
+    else setSaveStatus("saving");
+    try {
+      const { objects, viewport, settings } = boardRef.current;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ objects, viewport, settings }));
+      const library = libraryRef.current;
+      const active = activeLibraryBoard(library);
+      const updated: GreyboardBoard = {
+        ...active,
+        objects: cloneObjects(objects),
+        viewport: { ...viewport },
+        settings: { ...settings },
+        inputGuideMode,
+        updatedAt: new Date().toISOString(),
+      };
+      library.boards[updated.id] = updated;
+      library.activeBoardId = updated.id;
+      saveLibrary(library);
+      setSaveStatus(navigator.onLine ? "saved" : "offline");
+    } catch {
+      setSaveStatus("error");
+      showToast("Could not save locally");
+    }
   }
 
   async function fetchInboxTodos() {
-    setInbox((current) => ({ ...current, loading: true, error: "" }));
+    setInbox((current) => ({ ...current, loading: true, error: "", errorCode: "" }));
     try {
       const todos = USE_MOCK_INBOX ? mockInboxTodos() : await fetchInboxTodosFromApi();
       setInbox({
         todos: applyInboxStatus(todos, inboxStatus),
         loading: false,
         error: "",
+        errorCode: "",
         lastUpdated: new Date().toISOString(),
       });
     } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not load inbox todos.";
       setInbox({
         todos: [],
         loading: false,
-        error: error instanceof Error ? error.message : "Could not load inbox todos.",
+        error: message,
+        errorCode: message === "Gmail integration not configured" ? "config_missing" : "error",
         lastUpdated: new Date().toISOString(),
       });
     }
@@ -545,11 +570,13 @@ function Ghostboard() {
     const before = cloneObjects(boardRef.current.objects);
     const viewport = boardRef.current.viewport;
     const center = screenToWorld({ x: window.innerWidth / 2, y: window.innerHeight / 2 }, viewport);
+    const inboxCount = boardRef.current.objects.filter((object) => object.metadata?.source === "scheduled_inbox").length;
+    const offset = (inboxCount % 5) * 46;
     const text: TextObject = {
       id: createId(),
       type: "text",
-      x: center.x - 360,
-      y: center.y - 180,
+      x: center.x - 360 + offset,
+      y: center.y - 180 + offset,
       width: 720,
       height: 360,
       rotation: 0,
@@ -613,6 +640,8 @@ function Ghostboard() {
     libraryRef.current.activeBoardId = boardId;
     boardRef.current = stateFromBoard(board);
     setInputGuideMode(board.inputGuideMode ?? "mouse");
+    setTitleDraft(board.title);
+    setTitleEditing(false);
     saveLibrary(libraryRef.current);
     setLibraryOpen(false);
     setSidebarOpen(false);
@@ -629,6 +658,8 @@ function Ghostboard() {
     libraryRef.current.activeBoardId = board.id;
     boardRef.current = stateFromBoard(board);
     setInputGuideMode(board.inputGuideMode ?? "mouse");
+    setTitleDraft(board.title);
+    setTitleEditing(false);
     saveLibrary(libraryRef.current);
     setLibraryOpen(false);
     requestRender();
@@ -642,7 +673,40 @@ function Ghostboard() {
     board.title = title.trim() || "Untitled Greyboard";
     board.updatedAt = new Date().toISOString();
     saveLibrary(libraryRef.current);
+    if (boardId === libraryRef.current.activeBoardId) setTitleDraft(board.title);
     setLibraryTick((value) => value + 1);
+  }
+
+  function commitActiveBoardTitle() {
+    const board = activeLibraryBoard(libraryRef.current);
+    renameBoard(board.id, titleDraft);
+    setTitleEditing(false);
+    setSaveStatus("saved");
+  }
+
+  function cancelActiveBoardTitleEdit() {
+    setTitleDraft(activeLibraryBoard(libraryRef.current).title);
+    setTitleEditing(false);
+  }
+
+  function duplicateBoard(boardId: string) {
+    const board = libraryRef.current.boards[boardId];
+    if (!board) return;
+    const now = new Date().toISOString();
+    const copy: GreyboardBoard = {
+      ...board,
+      id: createId(),
+      title: `${board.title} copy`,
+      createdAt: now,
+      updatedAt: now,
+      objects: cloneObjects(board.objects),
+      viewport: { ...board.viewport },
+      settings: { ...board.settings },
+    };
+    libraryRef.current.boards[copy.id] = copy;
+    saveLibrary(libraryRef.current);
+    setLibraryTick((value) => value + 1);
+    showToast("Board duplicated");
   }
 
   function deleteBoard(boardId: string) {
@@ -657,10 +721,12 @@ function Ghostboard() {
       libraryRef.current.activeBoardId = next.id;
       boardRef.current = stateFromBoard(next);
       setInputGuideMode(next.inputGuideMode ?? "mouse");
+      setTitleDraft(next.title);
     } else if (libraryRef.current.activeBoardId === boardId) {
       libraryRef.current.activeBoardId = remaining[0].id;
       boardRef.current = stateFromBoard(remaining[0]);
       setInputGuideMode(remaining[0].inputGuideMode ?? "mouse");
+      setTitleDraft(remaining[0].title);
     }
     saveLibrary(libraryRef.current);
     requestRender();
@@ -1668,6 +1734,7 @@ function Ghostboard() {
   void libraryTick;
   const currentBoard = activeLibraryBoard(libraryRef.current);
   const libraryBoards = Object.values(libraryRef.current.boards).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const visibleTodos = visibleInboxTodos(inbox.todos);
 
   const theme = currentTheme(boardRef.current.settings);
   return (
@@ -1802,6 +1869,7 @@ function Ghostboard() {
                   <small>Updated {formatBoardTime(board.updatedAt)}</small>
                   <div className="library-card-actions">
                     <button type="button" onClick={() => openBoard(board.id)}>Open</button>
+                    <button type="button" onClick={() => duplicateBoard(board.id)}>Duplicate</button>
                     <button type="button" onClick={() => deleteBoard(board.id)}>Delete</button>
                   </div>
                 </article>
@@ -1825,7 +1893,30 @@ function Ghostboard() {
       <aside className={`sidebar ${sidebarOpen ? "is-open" : ""}`} aria-hidden={!sidebarOpen}>
         <div className="brand">
           <strong>Greyboard</strong>
-          <span>{currentBoard.title}</span>
+          {titleEditing ? (
+            <input
+              className="board-title-input"
+              value={titleDraft}
+              aria-label="Current board title"
+              autoFocus
+              onChange={(event) => setTitleDraft(event.target.value)}
+              onBlur={commitActiveBoardTitle}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  commitActiveBoardTitle();
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  cancelActiveBoardTitleEdit();
+                }
+              }}
+            />
+          ) : (
+            <button type="button" className="board-title-button" onClick={() => setTitleEditing(true)}>
+              {currentBoard.title}
+            </button>
+          )}
+          <span className={`save-status save-status-${saveStatus}`}>{saveStatusLabel(saveStatus)}</span>
         </div>
 
         <div className="tool-list" role="toolbar" aria-label="Greyboard tools">
@@ -1880,23 +1971,70 @@ function Ghostboard() {
               {inbox.loading ? "Loading" : "Refresh"}
             </button>
           </div>
-          {inbox.loading && <p>Loading inbox todos...</p>}
-          {!inbox.loading && inbox.error && <p>{inbox.error}</p>}
-          {!inbox.loading && !inbox.error && visibleInboxTodos(inbox.todos).length === 0 && <p>No email todos right now.</p>}
-          {!inbox.loading && !inbox.error && visibleInboxTodos(inbox.todos).map((todo) => (
+          {inbox.loading && (
+            <div className="inbox-state">
+              <strong>Checking inbox...</strong>
+              <span>Looking for personal emails that need time or a reply.</span>
+            </div>
+          )}
+          {!inbox.loading && inbox.errorCode === "config_missing" && (
+            <div className="inbox-state">
+              <strong>Gmail not connected yet.</strong>
+              <span>Add Google OAuth env vars in Vercel to enable real inbox todos.</span>
+              <span>Greyboard still works normally.</span>
+              <button type="button" onClick={() => setSetupNotesOpen((open) => !open)}>Setup notes</button>
+              {setupNotesOpen && (
+                <div className="setup-notes">
+                  <span>Required env vars:</span>
+                  <code>GOOGLE_CLIENT_ID</code>
+                  <code>GOOGLE_CLIENT_SECRET</code>
+                  <code>GOOGLE_REFRESH_TOKEN</code>
+                  <code>SCHEDULED_INBOX_USER_EMAILS</code>
+                  <small>No passwords. No frontend secrets.</small>
+                </div>
+              )}
+            </div>
+          )}
+          {!inbox.loading && inbox.errorCode === "error" && (
+            <div className="inbox-state">
+              <strong>Could not load inbox todos.</strong>
+              <span>Greyboard is still available.</span>
+              <button type="button" onClick={() => void fetchInboxTodos()}>Retry</button>
+            </div>
+          )}
+          {!inbox.loading && !inbox.error && visibleTodos.length === 0 && (
+            <div className="inbox-state">
+              <strong>No email todos right now.</strong>
+              <span>Nothing personal-looking needs attention.</span>
+            </div>
+          )}
+          {!inbox.loading && !inbox.error && visibleTodos.map((todo) => (
             <div key={todo.id} className={`inbox-item urgency-${todo.urgency}`}>
-              <button type="button" className="inbox-item-main" onClick={() => addInboxTodoToBoard(todo)}>
+              <button
+                type="button"
+                className="inbox-item-main"
+                onClick={() => setExpandedInboxId(expandedInboxId === todo.id ? null : todo.id)}
+                aria-expanded={expandedInboxId === todo.id}
+              >
+                <b>{urgencyLabel(todo.urgency)}</b>
                 <span>{todo.title}</span>
                 {todo.dueDate && <em>{todo.dueDate}</em>}
               </button>
-              <small>{todo.reason}</small>
-              <div className="inbox-item-actions">
-                <button type="button" onClick={() => addInboxTodoToBoard(todo)}>Add</button>
-                <button type="button" onClick={() => setTodoStatus(todo.id, "done")}>Done</button>
-                <button type="button" onClick={() => setTodoStatus(todo.id, "dismissed")}>Dismiss</button>
-                {todo.suggestedDraft && <button type="button" onClick={() => void copyInboxDraft(todo)}>Copy draft</button>}
-                {todo.gmailUrl && <button type="button" onClick={() => window.open(todo.gmailUrl, "_blank", "noopener,noreferrer")}>Gmail</button>}
-              </div>
+              <small>{todo.subject || todo.contactName || "Gmail"}</small>
+              {expandedInboxId === todo.id && (
+                <div className="inbox-item-expanded">
+                  <span><strong>Why:</strong> {todo.reason}</span>
+                  <span><strong>Action:</strong> {todo.suggestedAction}</span>
+                  {todo.suggestedDraft && <span><strong>Draft:</strong> {todo.suggestedDraft}</span>}
+                  <div className="inbox-item-actions">
+                    <button type="button" onClick={() => addInboxTodoToBoard(todo)}>Add to board</button>
+                    {todo.suggestedDraft && <button type="button" onClick={() => void copyInboxDraft(todo)}>Copy draft</button>}
+                    {todo.gmailUrl && <button type="button" onClick={() => window.open(todo.gmailUrl, "_blank", "noopener,noreferrer")}>Open Gmail</button>}
+                    <button type="button" onClick={() => setTodoStatus(todo.id, "done")}>Done</button>
+                    <button type="button" onClick={() => setTodoStatus(todo.id, "dismissed")}>Dismiss</button>
+                  </div>
+                </div>
+              )}
             </div>
           ))}
           {inbox.lastUpdated && <span className="inbox-updated">Updated {formatBoardTime(inbox.lastUpdated)}</span>}
@@ -3061,7 +3199,10 @@ async function fetchInboxTodosFromApi() {
   const response = await fetch("/api/scheduled-inbox/todos", { headers: { Accept: "application/json" } });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(typeof data.error === "string" ? data.error : "Could not load inbox todos.");
+    if (response.status === 501 && data.error === "Gmail integration not configured") {
+      throw new Error("Gmail integration not configured");
+    }
+    throw new Error("Could not load inbox todos.");
   }
   return Array.isArray(data.todos) ? data.todos as InboxTodo[] : [];
 }
@@ -3088,6 +3229,19 @@ function applyInboxStatus(todos: InboxTodo[], status: InboxStatusState) {
 
 function visibleInboxTodos(todos: InboxTodo[]) {
   return todos.filter((todo) => todo.status === "open");
+}
+
+function urgencyLabel(urgency: InboxUrgency) {
+  if (urgency === "high") return "HIGH";
+  if (urgency === "medium") return "MED";
+  return "LOW";
+}
+
+function saveStatusLabel(status: SaveStatus) {
+  if (status === "saving") return "Saving...";
+  if (status === "offline") return "Offline";
+  if (status === "error") return "Error saving";
+  return "Saved";
 }
 
 function formatInboxTodoText(todo: InboxTodo) {

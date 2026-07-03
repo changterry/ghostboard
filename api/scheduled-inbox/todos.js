@@ -185,6 +185,7 @@ function toInboxTodo(message, userEmails) {
     urgency,
     reason,
     suggestedAction: sentByUser ? "Send a short follow-up and ask about next steps." : suggestedActionForType(type),
+    suggestedDraft: suggestedDraftForTodo(type, contactName, subject, sentByUser),
     source: "gmail",
     status: "open",
     createdAt: date.toISOString(),
@@ -265,6 +266,23 @@ function suggestedActionForType(type) {
   return "Reply concisely and clarify the next step.";
 }
 
+function suggestedDraftForTodo(type, contactName, subject, sentByUser) {
+  const name = firstName(contactName) || "there";
+  if (sentByUser) {
+    return `Hi ${name}, wanted to follow up on ${subject || "my note"}. No rush, just wanted to keep this on your radar.`;
+  }
+  if (type === "calendar_change") {
+    return `Hi ${name}, thanks for the update. I can make that work. Please let me know if there is anything else I should prepare.`;
+  }
+  if (type === "send") {
+    return `Hi ${name}, thanks for the reminder. I will send this over shortly.`;
+  }
+  if (type === "recruiter") {
+    return `Hi ${name}, thanks for reaching out. I would be happy to connect and can share availability for next steps.`;
+  }
+  return `Hi ${name}, thanks for reaching out. I will take a look and get back to you shortly.`;
+}
+
 function titleForType(type, contactName) {
   if (type === "professor") return `Reply to ${contactName || "professor"}`;
   if (type === "recruiter") return `Reply to ${contactName || "recruiter"}`;
@@ -300,6 +318,10 @@ function urgencyRank(urgency) {
 function extractContactName(value) {
   const clean = value.replace(/<.*?>/g, "").replace(/"/g, "").trim();
   return clean.split(",")[0] || undefined;
+}
+
+function firstName(value) {
+  return value?.split(/\s+/).find(Boolean)?.replace(/[,;]/g, "");
 }
 
 function extractEmail(value) {
