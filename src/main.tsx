@@ -6,6 +6,7 @@ type Tool = "select" | "text" | "draw" | "erase" | "pan" | "shape";
 type ShapeKind = "line" | "arrow" | "ellipse" | "rect" | "triangle" | "curve";
 type ThemeMode = "dark" | "light";
 type InputGuideMode = "mouse" | "touchpad";
+type SidebarAction = Tool | "clear" | "settings" | "find";
 
 type Point = {
   x: number;
@@ -43,6 +44,8 @@ type RotationOrigin = {
 type BaseObject = {
   id: string;
   groupId?: string;
+  label?: string;
+  note?: string;
   color: string;
   rotation?: number;
   origin?: RotationOrigin;
@@ -137,6 +140,22 @@ type TouchGesture = {
   initialWorldCenter: Point;
 };
 
+type SearchResult = {
+  objectId: string;
+  objectType: "text" | "stroke" | "shape";
+  label: string;
+  snippet?: string;
+  bounds: Rect;
+  clusterId?: string;
+};
+
+type SmartFindState = {
+  isOpen: boolean;
+  query: string;
+  results: SearchResult[];
+  activeIndex: number;
+};
+
 const STORAGE_KEY = "ghostboard.state.v1";
 const LOCAL_CLIPBOARD_KEY = "greyboard.clipboard.v1";
 const CLIPBOARD_PREFIX = "greyboard/objects:";
@@ -150,6 +169,7 @@ const CLICK_MAX_DURATION_MS = 250;
 const DRAG_THRESHOLD_PX = 5;
 const DEFAULT_TEXT_LINE_HEIGHT = 1.16;
 const TEXT_FONT_FAMILY = "\"Segoe Print\", \"Comic Sans MS\", \"Bradley Hand ITC\", cursive";
+const SMART_FIND_EMPTY: SmartFindState = { isOpen: false, query: "", results: [], activeIndex: 0 };
 const THEME = {
   dark: {
     background: "#000000",
@@ -197,13 +217,14 @@ const DEFAULT_STATE: BoardState = {
 
 let runtimeBoardState: BoardState = DEFAULT_STATE;
 
-const TOOL_LABELS: Array<{ id: Tool | "clear" | "settings"; label: string; hint: string; icon: string }> = [
+const TOOL_LABELS: Array<{ id: SidebarAction; label: string; hint: string; icon: string }> = [
   { id: "select", label: "Select / Move", hint: "Move, resize, rotate", icon: "↖" },
   { id: "text", label: "Text", hint: "Click anywhere for big text", icon: "T" },
   { id: "draw", label: "Draw", hint: "Freehand chalk", icon: "⌁" },
   { id: "erase", label: "Erase", hint: "Delete whole strokes", icon: "⌫" },
   { id: "shape", label: "Smart Shape", hint: "Snap rough shapes", icon: "△" },
   { id: "pan", label: "Pan", hint: "Drag the board", icon: "" },
+  { id: "find", label: "Smart Find", hint: "Find old text and maps", icon: "F" },
   { id: "clear", label: "Clear Board", hint: "Remove everything", icon: "⌧" },
   { id: "settings", label: "Settings", hint: "Snap and appearance", icon: "⚙" },
 ];
@@ -215,7 +236,9 @@ function Ghostboard() {
   const historyRef = useRef<BoardObject[][]>([]);
   const redoRef = useRef<BoardObject[][]>([]);
   const rafRef = useRef<number | null>(null);
+  const cameraRafRef = useRef<number | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
+  const smartFindInputRef = useRef<HTMLInputElement | null>(null);
   const pendingSnapRef = useRef<PendingSnap | null>(null);
   const activeEditorRef = useRef<EditorState | null>(null);
   const toastTimerRef = useRef<number | null>(null);
@@ -227,6 +250,7 @@ function Ghostboard() {
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [inputGuideMode, setInputGuideMode] = useState<InputGuideMode>("mouse");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [smartFind, setSmartFind] = useState<SmartFindState>(SMART_FIND_EMPTY);
   const [toast, setToast] = useState("");
   const [tick, setTick] = useState(0);
   runtimeBoardState = boardRef.current;
@@ -280,7 +304,18 @@ function Ghostboard() {
         return;
       }
 
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        openSmartFind();
+        return;
+      }
+
       if (event.key === "Escape") {
+        if (smartFind.isOpen) {
+          event.preventDefault();
+          closeSmartFind();
+          return;
+        }
         if (contextMenu) {
           event.preventDefault();
           setContextMenu(null);
@@ -326,6 +361,12 @@ function Ghostboard() {
         return;
       }
 
+      if (smartFind.isOpen && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "g") {
+        event.preventDefault();
+        cycleSmartFind(event.shiftKey ? -1 : 1);
+        return;
+      }
+
       if (event.key === "Delete" || event.key === "Backspace") {
         deleteSelection();
       }
@@ -333,7 +374,12 @@ function Ghostboard() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [clearConfirmOpen, contextMenu, editor, settingsOpen, sidebarOpen]);
+  }, [clearConfirmOpen, contextMenu, editor, settingsOpen, sidebarOpen, smartFind]);
+
+  useEffect(() => {
+    if (!smartFind.isOpen) return;
+    smartFindInputRef.current?.focus({ preventScroll: true });
+  }, [smartFind.isOpen]);
 
   function forceUpdate() {
     setTick((value) => value + 1);
@@ -359,6 +405,100 @@ function Ghostboard() {
     setSidebarOpen(false);
     save();
     forceUpdate();
+  }
+
+  function openSmartFind() {
+    commitEditor();
+    setSidebarOpen(false);
+    setSettingsOpen(false);
+    setContextMenu(null);
+    setSmartFind((current) => ({ ...current, isOpen: true }));
+    requestRender();
+  }
+
+  function closeSmartFind() {
+    setSmartFind(SMART_FIND_EMPTY);
+    requestRender();
+  }
+
+  function updateSmartFindQuery(query: string) {
+    const results = query.trim() ? buildSearchResults(boardRef.current.objects, query) : [];
+    setSmartFind({ isOpen: true, query, results, activeIndex: 0 });
+    if (!query.trim()) {
+      requestRender();
+      return;
+    }
+    if (!results.length) {
+      showToast("No matches yet");
+      requestRender();
+      return;
+    }
+    zoomOutToOverview(results.map((result) => result.bounds), { duration: 450 });
+  }
+
+  function submitSmartFind() {
+    if (!smartFind.query.trim()) return;
+    if (!smartFind.results.length) {
+      showToast("No matches yet");
+      return;
+    }
+    focusSearchResult(smartFind.results[smartFind.activeIndex] ?? smartFind.results[0]);
+  }
+
+  function cycleSmartFind(direction: number) {
+    if (!smartFind.results.length) return;
+    const nextIndex = (smartFind.activeIndex + direction + smartFind.results.length) % smartFind.results.length;
+    const nextResult = smartFind.results[nextIndex];
+    setSmartFind((current) => ({ ...current, activeIndex: nextIndex }));
+    focusSearchResult(nextResult, 420);
+  }
+
+  function focusSearchResult(result: SearchResult, duration = 550) {
+    boardRef.current.selectedIds = [result.objectId];
+    zoomToBounds(expandRect(result.bounds, 80), { duration, paddingPx: 170, maxScale: 1.35 });
+    requestRender();
+    forceUpdate();
+  }
+
+  function zoomOutToOverview(boundsList: Rect[], options: { duration?: number } = {}) {
+    if (!boundsList.length) return;
+    const bounds = boundsList.reduce((rect, item) => unionRects(rect, item), boundsList[0]);
+    zoomToBounds(expandRect(bounds, 360), { duration: options.duration ?? 450, paddingPx: 110, maxScale: 0.9 });
+  }
+
+  function zoomToBounds(bounds: Rect, options: { duration?: number; paddingPx?: number; maxScale?: number } = {}) {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const target = getViewportForBounds(
+      bounds,
+      window.innerWidth,
+      window.innerHeight,
+      options.paddingPx ?? 120,
+      options.maxScale ?? MAX_SCALE,
+    );
+    animateViewport(target, options.duration ?? 500);
+  }
+
+  function animateViewport(target: Viewport, duration: number) {
+    if (cameraRafRef.current != null) window.cancelAnimationFrame(cameraRafRef.current);
+    const viewport = boardRef.current.viewport;
+    const start = { ...viewport };
+    const startTime = window.performance.now();
+    const tickCamera = (now: number) => {
+      const t = clamp((now - startTime) / Math.max(duration, 1), 0, 1);
+      const eased = easeInOutCubic(t);
+      viewport.scale = lerp(start.scale, target.scale, eased);
+      viewport.offsetX = lerp(start.offsetX, target.offsetX, eased);
+      viewport.offsetY = lerp(start.offsetY, target.offsetY, eased);
+      requestRender();
+      forceUpdate();
+      if (t < 1) {
+        cameraRafRef.current = window.requestAnimationFrame(tickCamera);
+      } else {
+        cameraRafRef.current = null;
+      }
+    };
+    cameraRafRef.current = window.requestAnimationFrame(tickCamera);
   }
 
   function pushHistory(before: BoardObject[]) {
@@ -1149,8 +1289,17 @@ function Ghostboard() {
     ctx.scale(state.viewport.scale, state.viewport.scale);
 
     const activeEditorId = activeEditorRef.current?.id;
+    const searchActive = smartFind.isOpen && Boolean(smartFind.query.trim()) && smartFind.results.length > 0;
+    const searchMatchIds = new Set(smartFind.results.map((result) => result.objectId));
     for (const object of state.objects) {
       if (activeEditorId === object.id) continue;
+      if (searchActive && !searchMatchIds.has(object.id)) {
+        ctx.save();
+        ctx.globalAlpha = 0.28;
+        renderObject(ctx, object, state.settings);
+        ctx.restore();
+        continue;
+      }
       renderObject(ctx, object, state.settings);
     }
 
@@ -1171,6 +1320,9 @@ function Ghostboard() {
     for (const selected of selectedObjects) {
       renderSelection(ctx, selected, state.settings, state.selectedIds.length > 1);
     }
+    if (searchActive) {
+      renderSearchHighlights(ctx, smartFind.results, smartFind.activeIndex, state.settings, state.viewport);
+    }
     ctx.restore();
   }
 
@@ -1181,6 +1333,7 @@ function Ghostboard() {
     : [];
   const canGroupSelection = contextSelectedObjects.length > 1;
   const canUngroupSelection = contextSelectedObjects.some((object) => object.groupId);
+  const activeSearchResult = smartFind.results[smartFind.activeIndex];
 
   const theme = currentTheme(boardRef.current.settings);
   return (
@@ -1227,6 +1380,46 @@ function Ghostboard() {
 
       {toast && <div className="toast" role="status">{toast}</div>}
 
+      {smartFind.isOpen && (
+        <div className="smart-find" role="search">
+          <input
+            ref={smartFindInputRef}
+            value={smartFind.query}
+            placeholder="Find on Greyboard..."
+            onChange={(event) => updateSmartFindQuery(event.target.value)}
+            onKeyDown={(event) => {
+              event.stopPropagation();
+              if (event.key === "Escape") {
+                event.preventDefault();
+                closeSmartFind();
+              } else if (event.key === "Enter") {
+                event.preventDefault();
+                submitSmartFind();
+              } else if (event.key === "ArrowDown") {
+                event.preventDefault();
+                cycleSmartFind(1);
+              } else if (event.key === "ArrowUp") {
+                event.preventDefault();
+                cycleSmartFind(-1);
+              }
+            }}
+          />
+          <span className="smart-find-count">
+            {smartFind.query.trim() ? `${smartFind.results.length} result${smartFind.results.length === 1 ? "" : "s"}` : "Search the board"}
+          </span>
+          <button type="button" aria-label="Previous result" onClick={() => cycleSmartFind(-1)}>↑</button>
+          <button type="button" aria-label="Next result" onClick={() => cycleSmartFind(1)}>↓</button>
+          <button type="button" aria-label="Zoom to result" onClick={submitSmartFind}>Enter</button>
+          <button type="button" aria-label="Close Smart Find" onClick={closeSmartFind}>×</button>
+          {activeSearchResult && (
+            <button type="button" className="smart-find-active" onClick={submitSmartFind}>
+              <strong>{activeSearchResult.label}</strong>
+              {activeSearchResult.snippet && <span>{activeSearchResult.snippet}</span>}
+            </button>
+          )}
+        </div>
+      )}
+
       {contextMenu && (
         <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} role="menu">
           <div className="context-menu-title">Selection</div>
@@ -1270,6 +1463,7 @@ function Ghostboard() {
               onClick={() => {
                 if (tool.id === "clear") clearBoard();
                 else if (tool.id === "settings") setSettingsOpen((open) => !open);
+                else if (tool.id === "find") openSmartFind();
                 else setTool(tool.id);
               }}
             >
@@ -1474,6 +1668,7 @@ function Ghostboard() {
                 <span>Middle mouse drag = pan</span>
                 <span>Control + scroll = zoom</span>
                 <span>Shift + scroll = horizontal pan</span>
+                <span>Smart Find: Control F</span>
                 <span>Copy image / paste: Control C and Control V</span>
                 <span>Undo / redo: Control Z and Control Y</span>
                 <span>Double-click text to edit</span>
@@ -1487,6 +1682,7 @@ function Ghostboard() {
                 <span>Two-finger drag = pan</span>
                 <span>Pinch = zoom</span>
                 <span>Shift + two-finger scroll = horizontal pan</span>
+                <span>Smart Find: Command F or sidebar</span>
                 <span>Copy image / paste: Control C and Control V</span>
                 <span>Undo / redo: Control Z and Control Y</span>
                 <span>Double-tap text to edit</span>
@@ -1675,6 +1871,63 @@ function renderSelection(ctx: CanvasRenderingContext2D, object: BoardObject, set
       ctx.stroke();
     }
   }
+  ctx.restore();
+}
+
+function renderSearchHighlights(ctx: CanvasRenderingContext2D, results: SearchResult[], activeIndex: number, settings: Settings, viewport: Viewport) {
+  const scale = currentScale(ctx);
+  const theme = currentTheme(settings);
+  const clusters = buildSearchClusters(results);
+  ctx.save();
+  for (const cluster of clusters) {
+    ctx.save();
+    ctx.strokeStyle = settings.themeMode === "dark" ? "rgba(138, 181, 255, 0.42)" : "rgba(55, 79, 120, 0.32)";
+    ctx.fillStyle = settings.themeMode === "dark" ? "rgba(138, 181, 255, 0.055)" : "rgba(55, 79, 120, 0.045)";
+    ctx.lineWidth = 3 / scale;
+    ctx.setLineDash([18 / scale, 14 / scale]);
+    const rounded = expandRect(cluster, 36);
+    ctx.beginPath();
+    ctx.roundRect(rounded.x, rounded.y, rounded.width, rounded.height, 28 / scale);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  results.forEach((result, index) => {
+    const active = index === activeIndex;
+    const rect = expandRect(result.bounds, active ? 26 : 16);
+    ctx.save();
+    ctx.shadowColor = settings.themeMode === "dark" ? "rgba(176, 204, 255, 0.55)" : "rgba(46, 69, 110, 0.32)";
+    ctx.shadowBlur = active ? 26 / scale : 14 / scale;
+    ctx.strokeStyle = active ? theme.ink : (settings.themeMode === "dark" ? "rgba(180, 205, 255, 0.62)" : "rgba(40, 55, 85, 0.48)");
+    ctx.fillStyle = settings.themeMode === "dark" ? "rgba(180, 205, 255, 0.06)" : "rgba(40, 55, 85, 0.045)";
+    ctx.lineWidth = active ? 3 / scale : 1.6 / scale;
+    ctx.setLineDash(active ? [] : [9 / scale, 7 / scale]);
+    ctx.beginPath();
+    ctx.roundRect(rect.x, rect.y, rect.width, rect.height, 14 / scale);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    const labelPoint = worldToScreen({ x: rect.x, y: rect.y }, viewport);
+    if (labelPoint.x > -120 && labelPoint.x < window.innerWidth + 120 && labelPoint.y > -60 && labelPoint.y < window.innerHeight + 60) {
+      ctx.save();
+      ctx.setTransform(window.devicePixelRatio || 1, 0, 0, window.devicePixelRatio || 1, 0, 0);
+      ctx.font = `${active ? 13 : 11}px Inter, Segoe UI, sans-serif`;
+      const label = active ? result.label : result.label.slice(0, 28);
+      const width = ctx.measureText(label).width + 16;
+      ctx.fillStyle = theme.panelBg;
+      ctx.strokeStyle = theme.selection;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(labelPoint.x, labelPoint.y - 26, width, 22, 11);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = theme.ink;
+      ctx.fillText(label, labelPoint.x + 8, labelPoint.y - 11);
+      ctx.restore();
+    }
+  });
   ctx.restore();
 }
 
@@ -2249,6 +2502,97 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number,
     lines.push(line || " ");
   }
   return lines.length ? lines : [""];
+}
+
+function buildSearchResults(objects: BoardObject[], query: string): SearchResult[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [];
+  return objects.flatMap((object) => {
+    const haystack = searchableTextForObject(object);
+    if (!haystack.toLowerCase().includes(needle)) return [];
+    const label = searchLabelForObject(object);
+    return [{
+      objectId: object.id,
+      objectType: object.type,
+      label,
+      snippet: object.type === "text" ? makeSnippet(object.text, needle) : undefined,
+      bounds: expandRect(objectBounds(object), object.type === "text" ? 10 : object.type === "stroke" ? object.size + 8 : object.size + 12),
+    }];
+  });
+}
+
+function searchableTextForObject(object: BoardObject) {
+  const metadata = [object.label, object.note, object.type];
+  if (object.type === "text") return [...metadata, object.text].filter(Boolean).join(" ");
+  if (object.type === "shape") return [...metadata, object.shapeType, shapeAlias(object.shapeType)].filter(Boolean).join(" ");
+  return [...metadata, "drawing", "stroke", "freehand"].filter(Boolean).join(" ");
+}
+
+function searchLabelForObject(object: BoardObject) {
+  if (object.label?.trim()) return object.label.trim().slice(0, 48);
+  if (object.type === "text") {
+    const line = object.text.split("\n").find((item) => item.trim()) ?? "Text";
+    return line.trim().slice(0, 48);
+  }
+  if (object.type === "shape") return object.shapeType === "ellipse" ? "circle / ellipse" : object.shapeType;
+  return "drawing stroke";
+}
+
+function makeSnippet(text: string, needle: string) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  const index = normalized.toLowerCase().indexOf(needle);
+  if (index < 0) return normalized.slice(0, 90);
+  const start = Math.max(0, index - 26);
+  const end = Math.min(normalized.length, index + needle.length + 42);
+  return `${start > 0 ? "..." : ""}${normalized.slice(start, end)}${end < normalized.length ? "..." : ""}`;
+}
+
+function shapeAlias(shapeType: ShapeKind) {
+  if (shapeType === "ellipse") return "circle oval";
+  if (shapeType === "rect") return "rectangle box square";
+  return "";
+}
+
+function buildSearchClusters(results: SearchResult[]) {
+  const clusters: Rect[] = [];
+  for (const result of results) {
+    let next = expandRect(result.bounds, 300);
+    let merged = true;
+    while (merged) {
+      merged = false;
+      for (let index = clusters.length - 1; index >= 0; index -= 1) {
+        if (!rectsIntersect(next, clusters[index])) continue;
+        next = unionRects(next, clusters[index]);
+        clusters.splice(index, 1);
+        merged = true;
+      }
+    }
+    clusters.push(next);
+  }
+  return clusters;
+}
+
+function getViewportForBounds(bounds: Rect, canvasWidth: number, canvasHeight: number, paddingPx: number, maxScale = MAX_SCALE): Viewport {
+  const safeWidth = Math.max(bounds.width, 1);
+  const safeHeight = Math.max(bounds.height, 1);
+  const scaleX = Math.max(canvasWidth - paddingPx * 2, 120) / safeWidth;
+  const scaleY = Math.max(canvasHeight - paddingPx * 2, 120) / safeHeight;
+  const targetScale = clamp(Math.min(scaleX, scaleY), MIN_SCALE, Math.min(MAX_SCALE, maxScale));
+  const centerX = bounds.x + bounds.width / 2;
+  const centerY = bounds.y + bounds.height / 2;
+  return {
+    scale: targetScale,
+    offsetX: canvasWidth / 2 - centerX * targetScale,
+    offsetY: canvasHeight / 2 - centerY * targetScale,
+  };
+}
+
+function easeInOutCubic(value: number) {
+  return value < 0.5 ? 4 * value * value * value : 1 - Math.pow(-2 * value + 2, 3) / 2;
+}
+
+function lerp(start: number, end: number, t: number) {
+  return start + (end - start) * t;
 }
 
 function loadState(): BoardState {
