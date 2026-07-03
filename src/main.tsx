@@ -931,11 +931,49 @@ function Ghostboard() {
     object.text = text;
     object.updatedAt = Date.now();
     const metrics = measureTextBox(object);
-    object.width = Math.max(object.fontSize * 1.8, metrics.width);
-    object.height = Math.max(metrics.height, object.fontSize * 1.35);
+    object.height = Math.max(object.height, metrics.height, object.fontSize * 1.35);
     save();
     forceUpdate();
     requestRender();
+  }
+
+  function applyTextEditorChange(id: string, nextText: string, nextCursor: number) {
+    updateText(id, nextText);
+    window.requestAnimationFrame(() => {
+      const textarea = editorRef.current;
+      if (!textarea) return;
+      textarea.setSelectionRange(nextCursor, nextCursor);
+    });
+  }
+
+  function handleTextEditorKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>, object: TextObject) {
+    const textarea = event.currentTarget;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const value = textarea.value;
+    const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+    const lineEndIndex = value.indexOf("\n", start);
+    const lineEnd = lineEndIndex === -1 ? value.length : lineEndIndex;
+    const lineBeforeCursor = value.slice(lineStart, start);
+    const currentLine = value.slice(lineStart, lineEnd);
+
+    if (event.key === " " && start === end && lineBeforeCursor === "-") {
+      event.preventDefault();
+      const next = `${value.slice(0, lineStart)}• ${value.slice(start)}`;
+      applyTextEditorChange(object.id, next, lineStart + 2);
+      return;
+    }
+
+    if (event.key === "Enter" && start === end && currentLine.startsWith("• ")) {
+      event.preventDefault();
+      if (currentLine.trim() === "•") {
+        const next = `${value.slice(0, lineStart)}\n${value.slice(lineEndIndex === -1 ? lineEnd : lineEnd + 1)}`;
+        applyTextEditorChange(object.id, next, lineStart + 1);
+      } else {
+        const next = `${value.slice(0, start)}\n• ${value.slice(end)}`;
+        applyTextEditorChange(object.id, next, start + 3);
+      }
+    }
   }
 
   function createTextAt(world: Point) {
@@ -1168,6 +1206,11 @@ function Ghostboard() {
     const screen = eventPoint(event);
     const world = screenToWorld(screen, boardRef.current.viewport);
 
+    if (interaction.type === "none") {
+      updateCanvasCursor(world);
+      return;
+    }
+
     if (interaction.type === "pan" && interaction.pointerId === event.pointerId) {
       const viewport = boardRef.current.viewport;
       viewport.offsetX += screen.x - interaction.last.x;
@@ -1395,6 +1438,24 @@ function Ghostboard() {
     forceUpdate();
   }
 
+  function updateCanvasCursor(world: Point) {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const state = boardRef.current;
+    const selected = state.selectedIds.length === 1 ? state.objects.find((object) => object.id === state.selectedIds[0]) : null;
+    const handle = selected ? hitSelectionHandle(world) : null;
+    if (handle) {
+      canvas.style.cursor = cursorForHandle(handle);
+      return;
+    }
+    const hit = hitTest(world);
+    if (selected && hit?.id === selected.id && !editor) {
+      canvas.style.cursor = "move";
+      return;
+    }
+    canvas.style.cursor = "";
+  }
+
   function render() {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -1501,6 +1562,7 @@ function Ghostboard() {
           placeholder=""
           spellCheck={false}
           onChange={(event) => updateText(editorObject.id, event.target.value)}
+          onKeyDown={(event) => handleTextEditorKeyDown(event, editorObject)}
           onBlur={commitEditor}
         />
       )}
@@ -2015,9 +2077,16 @@ function renderSelection(ctx: CanvasRenderingContext2D, object: BoardObject, set
         ctx.beginPath();
         ctx.arc(local.x, local.y, 7 / scale, 0, Math.PI * 2);
         ctx.stroke();
+      } else if (handle.name.length === 1) {
+        ctx.beginPath();
+        ctx.arc(local.x, local.y, 4.5 / scale, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
       } else {
-        ctx.fillRect(local.x - 5 / scale, local.y - 5 / scale, 10 / scale, 10 / scale);
-        ctx.strokeRect(local.x - 5 / scale, local.y - 5 / scale, 10 / scale, 10 / scale);
+        ctx.beginPath();
+        ctx.roundRect(local.x - 5 / scale, local.y - 5 / scale, 10 / scale, 10 / scale, 2.5 / scale);
+        ctx.fill();
+        ctx.stroke();
       }
     }
   } else {
@@ -2440,12 +2509,31 @@ function selectionHandles(object: BoardObject) {
   }
   const corners = [
     { name: "nw", point: localToWorldText({ x: 0, y: 0 }, object) },
+    { name: "n", point: localToWorldText({ x: object.width / 2, y: 0 }, object) },
     { name: "ne", point: localToWorldText({ x: object.width, y: 0 }, object) },
+    { name: "e", point: localToWorldText({ x: object.width, y: object.height / 2 }, object) },
     { name: "se", point: localToWorldText({ x: object.width, y: object.height }, object) },
+    { name: "s", point: localToWorldText({ x: object.width / 2, y: object.height }, object) },
     { name: "sw", point: localToWorldText({ x: 0, y: object.height }, object) },
+    { name: "w", point: localToWorldText({ x: 0, y: object.height / 2 }, object) },
     { name: "rotate", point: localToWorldText({ x: object.width / 2, y: -42 }, object) },
   ];
   return corners;
+}
+
+function cursorForHandle(handle: string) {
+  const cursors: Record<string, string> = {
+    nw: "nwse-resize",
+    se: "nwse-resize",
+    ne: "nesw-resize",
+    sw: "nesw-resize",
+    n: "ns-resize",
+    s: "ns-resize",
+    w: "ew-resize",
+    e: "ew-resize",
+    rotate: "grab",
+  };
+  return cursors[handle] ?? "default";
 }
 
 function applyMove(object: BoardObject, original: BoardObject, dx: number, dy: number) {
@@ -2475,8 +2563,8 @@ function applyMove(object: BoardObject, original: BoardObject, dx: number, dy: n
 
 function applyResize(object: BoardObject, original: BoardObject, handle: string, dx: number, dy: number) {
   if (object.type === "text" && original.type === "text") {
-    const minWidth = object.fontSize * 1.8;
-    const minHeight = object.fontSize * 1.15;
+    const minWidth = 80;
+    const minHeight = Math.max(40, object.fontSize * (object.lineHeight ?? DEFAULT_TEXT_LINE_HEIGHT));
     if (handle.includes("e")) object.width = Math.max(minWidth, original.width + dx);
     if (handle.includes("s")) object.height = Math.max(minHeight, original.height + dy);
     if (handle.includes("w")) {
@@ -2653,10 +2741,9 @@ function measureTextBox(object: TextObject) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return { width: object.width, height: object.height };
   ctx.font = `${object.fontSize}px ${TEXT_FONT_FAMILY}`;
-  const lines = (object.text || "").split("\n");
-  const width = Math.max(...lines.map((line) => ctx.measureText(line || " ").width), object.fontSize * 2) + 20;
+  const lines = wrapText(ctx, object.text || " ", object.width, object.fontSize);
   const height = Math.max(lines.length, 1) * object.fontSize * (object.lineHeight ?? DEFAULT_TEXT_LINE_HEIGHT);
-  return { width, height };
+  return { width: object.width, height };
 }
 
 function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, fontSize: number) {
