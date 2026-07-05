@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { INBOX_BUCKETS, classifyMessage } from "./classifier.js";
 
 const GMAIL_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
@@ -8,50 +9,6 @@ const LEGACY_REQUIRED_ENV = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE
 const MAX_GMAIL_ACCOUNTS = 4;
 
 loadLocalEnvForDev();
-
-const PERSONAL_SIGNAL_WORDS = [
-  "reply",
-  "respond",
-  "follow up",
-  "following up",
-  "checking in",
-  "quick question",
-  "could you",
-  "can you",
-  "would you",
-  "let me know",
-  "next step",
-  "schedule",
-  "reschedule",
-  "meeting",
-  "deadline",
-  "interview",
-  "application",
-  "transcript",
-  "internship",
-  "research",
-  "professor",
-  "lab",
-  "reu",
-];
-
-const IGNORE_PATTERNS = [
-  /handshake/i,
-  /project\s*xyz/i,
-  /promotion/i,
-  /unsubscribe/i,
-  /newsletter/i,
-  /no-?reply/i,
-  /donotreply/i,
-  /do-not-reply/i,
-  /notification/i,
-  /digest/i,
-  /career fair/i,
-  /job alert/i,
-  /internship alert/i,
-  /linkedin jobs/i,
-  /linkedin@e\.linkedin\.com/i,
-];
 
 export default async function handler(request, response) {
   if (request.method !== "GET") {
@@ -72,6 +29,10 @@ export default async function handler(request, response) {
   }
 
   try {
+    if (isPreviewRequest(request)) {
+      response.status(200).json(await fetchEmailPreviewForRequest(request, accounts));
+      return;
+    }
     const accountResults = await Promise.all(accounts.map(fetchTodosForAccount));
     const todos = accountResults
       .flatMap((result) => result.todos)
@@ -114,7 +75,7 @@ async function fetchTodosForAccount(account) {
   const accessToken = await getAccessToken(account);
   const [incomingMessages, sentMessages] = await Promise.all([
     fetchCandidateMessages(accessToken, incomingQuery()),
-    fetchSentFollowUpMessages(accessToken, account.userEmails),
+    fetchSentFollowUpMessages(accessToken, account.userEmails, true),
   ]);
   return { account, todos: normalizeMessages([...incomingMessages, ...sentMessages], account.userEmails, publicAccount(account)) };
 }
@@ -137,6 +98,12 @@ function isDebugRequest(request) {
   const host = request.headers?.host || "localhost";
   const url = new URL(request.url || "/", `https://${host}`);
   return url.searchParams.get("debug") === "1";
+}
+
+function isPreviewRequest(request) {
+  const host = request.headers?.host || "localhost";
+  const url = new URL(request.url || "/", `https://${host}`);
+  return url.searchParams.get("preview") === "1";
 }
 
 function buildDebugDiagnostics(env = process.env) {
@@ -203,11 +170,12 @@ async function fetchCandidateMessages(accessToken, query) {
   ));
 }
 
-async function fetchSentFollowUpMessages(accessToken, userEmails) {
+async function fetchSentFollowUpMessages(accessToken, userEmails, includeThreadMessages = false) {
   const sentMessages = await fetchCandidateMessages(accessToken, sentFollowUpQuery());
   const checks = await Promise.all(sentMessages.map(async (message) => {
     const thread = await gmailFetch(`${GMAIL_API_BASE}/threads/${message.threadId}?format=metadata&metadataHeaders=From&metadataHeaders=Date`, accessToken);
-    return hasNonUserReplyAfterMessage(thread.messages ?? [], message, userEmails) ? null : message;
+    if (hasNonUserReplyAfterMessage(thread.messages ?? [], message, userEmails)) return null;
+    return includeThreadMessages ? { ...message, threadMessages: thread.messages ?? [] } : message;
   }));
   return checks.filter(Boolean);
 }
@@ -243,14 +211,14 @@ function toInboxTodo(message, userEmails, account) {
   const haystack = `${from} ${to} ${cc} ${subject} ${snippet}`;
   const fromLower = from.toLowerCase();
   const sentByUser = userEmails.some((email) => fromLower.includes(email));
+  const classification = classifyMessage({ message, userEmails, threadMessages: message.threadMessages ?? [] });
 
-  if (shouldIgnoreMessage(haystack, from, to, cc, sentByUser)) return null;
-  if (!sentByUser && !looksActionWorthy(haystack, from, to, cc)) return null;
+  if (!classification.isTodo) return null;
 
   const contactSource = sentByUser ? to : from;
   const contactName = extractContactName(contactSource);
   const dueDate = dueDateFromText(haystack) ?? (sentByUser ? "Follow up" : undefined);
-  const type = sentByUser ? "follow_up" : inferType(haystack, from);
+  const type = sentByUser ? "follow_up" : typeForBucket(classification.bucket, haystack, from);
   const urgency = inferUrgency(haystack, dueDate, sentByUser);
   const reason = sentByUser
     ? "Sent email has not had a visible response after a week."
@@ -259,6 +227,9 @@ function toInboxTodo(message, userEmails, account) {
   return {
     id: stableTodoId(message, type),
     type,
+    bucket: classification.bucket,
+    confidence: classification.confidence,
+    reasonCodes: classification.reasons,
     title: sentByUser ? `Follow up with ${contactName || "contact"}` : titleForType(type, contactName),
     contactName,
     contactEmail: extractEmail(contactSource),
@@ -308,21 +279,11 @@ function isFromUser(from, userEmails) {
   return userEmails.some((email) => fromLower.includes(email));
 }
 
-function shouldIgnoreMessage(text, from, to, cc, sentByUser) {
-  if (IGNORE_PATTERNS.some((pattern) => pattern.test(text))) return true;
-  const fromLower = from.toLowerCase();
-  const textLower = text.toLowerCase();
-  if (fromLower.includes("ride") && recipientCount(`${to},${cc}`) > 4) return true;
-  if (!sentByUser && recipientCount(`${to},${cc}`) > 8 && !/(meeting|deadline|resched|time change|interview|reply|respond)/i.test(textLower)) return true;
-  return false;
-}
-
-function looksActionWorthy(text, from, to, cc) {
-  const lower = text.toLowerCase();
-  if (PERSONAL_SIGNAL_WORDS.some((word) => lower.includes(word))) return true;
-  if (/@(?:[^>\s,]+\.)?edu(?:[>\s,]|$)/i.test(from)) return true;
-  if (recipientCount(`${to},${cc}`) <= 3 && !/(newsletter|alert|promotion|webinar|event)/i.test(lower)) return true;
-  return false;
+function typeForBucket(bucket, text, from) {
+  if (bucket === INBOX_BUCKETS.FOLLOW_UP_REQUIRED || bucket === INBOX_BUCKETS.WAITING_ON_REPLY) return "follow_up";
+  if (bucket === INBOX_BUCKETS.RSVP_REQUIRED) return "calendar_change";
+  if (bucket === INBOX_BUCKETS.ACTION_REQUIRED && /send|transcript|document|resume|upload|submit|fill out|complete/i.test(text)) return "send";
+  return inferType(text, from);
 }
 
 function inferType(text, from) {
@@ -332,6 +293,75 @@ function inferType(text, from) {
   if (/calendar|resched|time change|deadline|meeting/.test(lower)) return "calendar_change";
   if (/send|transcript|document|resume/.test(lower)) return "send";
   return "reply";
+}
+
+async function fetchEmailPreviewForRequest(request, accounts) {
+  const host = request.headers?.host || "localhost";
+  const url = new URL(request.url || "/", `https://${host}`);
+  const accountId = url.searchParams.get("accountId") || "";
+  const messageId = url.searchParams.get("messageId") || "";
+  if (!accountId || !messageId) throw new GreyboardInboxError("missing_preview_params");
+  const account = accounts.find((item) => item.id === accountId);
+  if (!account) throw new GreyboardInboxError("account_not_found");
+  const accessToken = await getAccessToken(account);
+  const message = await gmailFetch(`${GMAIL_API_BASE}/messages/${messageId}?format=full`, accessToken);
+  if (message.id !== messageId) throw new GreyboardInboxError("gmail_message_not_found");
+  return emailPreviewFromMessage(message, publicAccount(account));
+}
+
+function emailPreviewFromMessage(message, account) {
+  const headers = headerMap(message);
+  const body = truncatePreview(plainTextFromPayload(message.payload) || message.snippet || "");
+  return {
+    id: message.id,
+    threadId: message.threadId,
+    accountId: account.id,
+    from: headers.from,
+    date: headers.date,
+    subject: headers.subject,
+    snippet: message.snippet,
+    bodyText: body.text,
+    bodyTruncated: body.truncated,
+    gmailUrl: message.threadId ? `https://mail.google.com/mail/u/0/#inbox/${message.threadId}` : undefined,
+  };
+}
+
+function plainTextFromPayload(payload) {
+  if (!payload) return "";
+  if (payload.mimeType === "text/plain" && payload.body?.data) return decodeBase64Url(payload.body.data);
+  if (payload.mimeType === "text/html" && payload.body?.data) return stripHtmlForPreview(decodeBase64Url(payload.body.data));
+  for (const part of payload.parts ?? []) {
+    const nested = plainTextFromPayload(part);
+    if (nested) return nested;
+  }
+  return "";
+}
+
+function decodeBase64Url(value = "") {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  return Buffer.from(normalized, "base64").toString("utf8");
+}
+
+function stripHtmlForPreview(html = "") {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function truncatePreview(text, maxLength = 8000) {
+  const clean = text.replace(/\r/g, "").trim();
+  if (clean.length <= maxLength) return { text: clean, truncated: false };
+  return { text: `${clean.slice(0, maxLength).trim()}...`, truncated: true };
 }
 
 function inferUrgency(text, dueDate, sentByUser) {
@@ -488,10 +518,6 @@ function loadLocalEnvForDev() {
     }
     process.env[key] = value;
   }
-}
-
-function recipientCount(value) {
-  return value.split(",").map((part) => part.trim()).filter(Boolean).length;
 }
 
 function urgencyRank(urgency) {

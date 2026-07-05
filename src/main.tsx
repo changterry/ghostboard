@@ -180,6 +180,9 @@ type SmartFindState = {
 type InboxTodo = {
   id: string;
   type: "reply" | "follow_up" | "send" | "deadline_change" | "calendar_change" | "recruiter" | "lab" | "professor" | "personal";
+  bucket?: string;
+  confidence?: number;
+  reasonCodes?: string[];
   title: string;
   contactName?: string;
   contactEmail?: string;
@@ -225,6 +228,26 @@ type InboxStatusState = {
   dismissed: Record<string, string>;
 };
 
+type InboxEmailPreview = {
+  id: string;
+  threadId?: string;
+  accountId: string;
+  from?: string;
+  date?: string;
+  subject?: string;
+  snippet?: string;
+  bodyText?: string;
+  bodyTruncated: boolean;
+  gmailUrl?: string;
+};
+
+type InboxPreviewState = {
+  byTodoId: Record<string, InboxEmailPreview>;
+  openTodoId: string | null;
+  loadingTodoId: string | null;
+  errorByTodoId: Record<string, string>;
+};
+
 const STORAGE_KEY = "ghostboard.state.v1";
 const GREYBOARD_LIBRARY_STORAGE_KEY = "greyboard.library.v1";
 const INBOX_STATUS_STORAGE_KEY = "greyboard.inboxTodos.status.v1";
@@ -238,6 +261,9 @@ const MAX_SCALE = 5;
 const HIT_TOLERANCE = 12;
 const CLICK_MAX_DURATION_MS = 250;
 const DRAG_THRESHOLD_PX = 5;
+const TEXT_BOX_PADDING = 16;
+const TEXT_BOX_MIN_WIDTH = 96;
+const TEXT_BOX_MIN_HEIGHT = 56;
 const DEFAULT_TEXT_LINE_HEIGHT = 1.16;
 const TEXT_FONT_FAMILY = "\"Segoe Print\", \"Comic Sans MS\", \"Bradley Hand ITC\", cursive";
 const SMART_FIND_EMPTY: SmartFindState = { isOpen: false, query: "", results: [], activeIndex: 0 };
@@ -330,8 +356,12 @@ function Ghostboard() {
   const [inbox, setInbox] = useState<InboxState>({ todos: [], accounts: [], loading: true, error: "", errorCode: "" });
   const [inboxStatus, setInboxStatus] = useState<InboxStatusState>(loadInboxStatus());
   const [expandedInboxId, setExpandedInboxId] = useState<string | null>(null);
+  const [inboxOpen, setInboxOpen] = useState(false);
   const [accountLegendOpen, setAccountLegendOpen] = useState(false);
   const [setupNotesOpen, setSetupNotesOpen] = useState(false);
+  const [openInboxRailId, setOpenInboxRailId] = useState<string | null>(null);
+  const [swipingInbox, setSwipingInbox] = useState<{ id: string; offset: number } | null>(null);
+  const [inboxPreview, setInboxPreview] = useState<InboxPreviewState>({ byTodoId: {}, openTodoId: null, loadingTodoId: null, errorByTodoId: {} });
   const [libraryTick, setLibraryTick] = useState(0);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>(navigator.onLine ? "saved" : "offline");
   const [titleDraft, setTitleDraft] = useState(activeLibraryBoard(libraryRef.current).title);
@@ -402,6 +432,17 @@ function Ghostboard() {
       }
 
       if (event.key === "Escape") {
+        if (openInboxRailId) {
+          event.preventDefault();
+          setOpenInboxRailId(null);
+          setSwipingInbox(null);
+          return;
+        }
+        if (inboxOpen) {
+          event.preventDefault();
+          setInboxOpen(false);
+          return;
+        }
         if (libraryOpen) {
           event.preventDefault();
           setLibraryOpen(false);
@@ -464,7 +505,7 @@ function Ghostboard() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [clearConfirmOpen, contextMenu, editor, libraryOpen, settingsOpen, sidebarOpen, smartFind]);
+  }, [clearConfirmOpen, contextMenu, editor, inboxOpen, libraryOpen, openInboxRailId, settingsOpen, sidebarOpen, smartFind]);
 
   useEffect(() => {
     if (!smartFind.isOpen) return;
@@ -568,6 +609,9 @@ function Ghostboard() {
     setInboxStatus(next);
     saveInboxStatus(next);
     setInbox((current) => ({ ...current, todos: applyInboxStatus(current.todos, next) }));
+    setOpenInboxRailId(null);
+    setSwipingInbox(null);
+    showToast(status === "done" ? "Marked done" : "Dismissed");
   }
 
   function addInboxTodoToBoard(todo: InboxTodo) {
@@ -641,6 +685,64 @@ function Ghostboard() {
     } catch {
       showToast("Could not copy draft");
     }
+  }
+
+  async function fetchInboxEmailPreview(todo: InboxTodo) {
+    if (!todo.emailMessageId || !todo.accountId) {
+      showToast("No email preview available");
+      return;
+    }
+    if (inboxPreview.openTodoId === todo.id) {
+      setInboxPreview((current) => ({ ...current, openTodoId: null }));
+      return;
+    }
+    if (inboxPreview.byTodoId[todo.id]) {
+      setInboxPreview((current) => ({ ...current, openTodoId: todo.id }));
+      return;
+    }
+    setInboxPreview((current) => ({ ...current, loadingTodoId: todo.id, errorByTodoId: { ...current.errorByTodoId, [todo.id]: "" } }));
+    try {
+      const preview = await fetchInboxEmailPreviewFromApi(todo);
+      setInboxPreview((current) => ({
+        byTodoId: { ...current.byTodoId, [todo.id]: preview },
+        openTodoId: todo.id,
+        loadingTodoId: null,
+        errorByTodoId: { ...current.errorByTodoId, [todo.id]: "" },
+      }));
+    } catch {
+      setInboxPreview((current) => ({
+        ...current,
+        loadingTodoId: null,
+        errorByTodoId: { ...current.errorByTodoId, [todo.id]: "Could not load email preview." },
+      }));
+    }
+  }
+
+  function inboxActionsForTodo(todo: InboxTodo) {
+    return [
+      { id: "done", label: "Done", icon: "✓", run: () => setTodoStatus(todo.id, "done") },
+      { id: "dismiss", label: "Dismiss", icon: "×", run: () => setTodoStatus(todo.id, "dismissed") },
+      { id: "board", label: "Add to board", icon: "+", run: () => addInboxTodoToBoard(todo) },
+      ...(todo.gmailUrl ? [{ id: "gmail", label: "Open Gmail", icon: "↗", run: () => window.open(todo.gmailUrl, "_blank", "noopener,noreferrer") }] : []),
+      ...(todo.suggestedDraft ? [{ id: "copy", label: "Copy draft", icon: "⧉", run: () => void copyInboxDraft(todo) }] : []),
+    ];
+  }
+
+  function handleInboxItemWheel(event: React.WheelEvent, todo: InboxTodo) {
+    if (Math.abs(event.deltaX) < Math.abs(event.deltaY) * 1.25) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const actionCount = inboxActionsForTodo(todo).length;
+    const maxOffset = Math.min(220, actionCount * 44);
+    const currentOffset = swipingInbox?.id === todo.id ? swipingInbox.offset : openInboxRailId === todo.id ? maxOffset : 0;
+    const nextOffset = Math.max(0, Math.min(maxOffset, currentOffset + event.deltaX));
+    setOpenInboxRailId(null);
+    setSwipingInbox({ id: todo.id, offset: nextOffset });
+    window.clearTimeout((handleInboxItemWheel as unknown as { settleTimer?: number }).settleTimer);
+    (handleInboxItemWheel as unknown as { settleTimer?: number }).settleTimer = window.setTimeout(() => {
+      setOpenInboxRailId(nextOffset > 56 ? todo.id : null);
+      setSwipingInbox(null);
+    }, 120);
   }
 
   function openLibrary() {
@@ -1163,7 +1265,8 @@ function Ghostboard() {
     object.text = text;
     object.updatedAt = Date.now();
     const metrics = measureTextBox(object);
-    object.height = Math.max(object.height, metrics.height, object.fontSize * 1.35);
+    object.width = Math.max(object.width, metrics.minWidth);
+    object.height = Math.max(object.height, metrics.minHeight, object.fontSize * 1.35);
     save();
     forceUpdate();
     requestRender();
@@ -1910,7 +2013,7 @@ function Ghostboard() {
         <button type="button" aria-label="Redo" onClick={redo}>↷</button>
       </div>
 
-      <aside className={`sidebar ${sidebarOpen ? "is-open" : ""}`} aria-hidden={!sidebarOpen}>
+      <aside className={`sidebar ${sidebarOpen ? "is-open" : ""} ${inboxOpen ? "has-inbox-open" : ""}`} aria-hidden={!sidebarOpen && !inboxOpen}>
         <div className="brand">
           <strong>Greyboard</strong>
           {titleEditing ? (
@@ -1995,7 +2098,18 @@ function Ghostboard() {
           </div>
         )}
 
-        <section className="inbox-feed" aria-label="Inbox Feed">
+        <button
+          type="button"
+          className="inbox-open-button"
+          onClick={() => setInboxOpen((open) => !open)}
+          aria-expanded={inboxOpen}
+          aria-controls="inbox-panel"
+        >
+          <span>Inbox Feed</span>
+          <strong>{visibleTodos.length}</strong>
+        </button>
+
+        <section id="inbox-panel" className={`inbox-feed ${inboxOpen ? "is-open" : ""}`} aria-label="Inbox Feed" aria-hidden={!inboxOpen}>
           <div className="inbox-feed-header">
             <strong>Inbox Feed</strong>
             <div className="inbox-feed-controls">
@@ -2058,38 +2172,89 @@ function Ghostboard() {
               <span>Nothing personal-looking needs attention.</span>
             </div>
           )}
-          {!inbox.loading && !inbox.error && visibleTodos.map((todo) => (
-            <div key={todo.id} className={`inbox-item urgency-${todo.urgency}`}>
-              <button
-                type="button"
-                className="inbox-item-main"
-                onClick={() => setExpandedInboxId(expandedInboxId === todo.id ? null : todo.id)}
-                aria-expanded={expandedInboxId === todo.id}
+          {!inbox.loading && !inbox.error && visibleTodos.map((todo) => {
+            const actions = inboxActionsForTodo(todo);
+            const railWidth = Math.min(220, actions.length * 44);
+            const activeOffset = swipingInbox?.id === todo.id ? swipingInbox.offset : openInboxRailId === todo.id ? railWidth : 0;
+            const preview = inboxPreview.openTodoId === todo.id ? inboxPreview.byTodoId[todo.id] : null;
+            const previewError = inboxPreview.errorByTodoId[todo.id];
+            return (
+              <div
+                key={todo.id}
+                className={`inbox-item urgency-${todo.urgency} ${openInboxRailId === todo.id ? "is-rail-open" : ""}`}
+                style={{ "--inbox-swipe-offset": `${activeOffset}px`, "--inbox-rail-width": `${railWidth}px` } as React.CSSProperties}
+                onWheel={(event) => handleInboxItemWheel(event, todo)}
               >
-                <b>{urgencyLabel(todo.urgency)}</b>
-                <span>{todo.title}</span>
-                {todo.dueDate && <em>{todo.dueDate}</em>}
-              </button>
-              <small className="inbox-item-source">
-                <AccountIcon account={accountForTodo(todo, inbox.accounts)} />
-                <span>{todo.subject || todo.contactName || todo.accountLabel || "Gmail"}</span>
-              </small>
-              {expandedInboxId === todo.id && (
-                <div className="inbox-item-expanded">
-                  <span><strong>Why:</strong> {todo.reason}</span>
-                  <span><strong>Action:</strong> {todo.suggestedAction}</span>
-                  {todo.suggestedDraft && <span><strong>Draft:</strong> {todo.suggestedDraft}</span>}
-                  <div className="inbox-item-actions">
-                    <button type="button" onClick={() => addInboxTodoToBoard(todo)}>Add to board</button>
-                    {todo.suggestedDraft && <button type="button" onClick={() => void copyInboxDraft(todo)}>Copy draft</button>}
-                    {todo.gmailUrl && <button type="button" onClick={() => window.open(todo.gmailUrl, "_blank", "noopener,noreferrer")}>Open Gmail</button>}
-                    <button type="button" onClick={() => setTodoStatus(todo.id, "done")}>Done</button>
-                    <button type="button" onClick={() => setTodoStatus(todo.id, "dismissed")}>Dismiss</button>
+                <div className="inbox-item-swipe">
+                  <div className="inbox-item-card">
+                    <button
+                      type="button"
+                      className="inbox-item-main"
+                      onClick={() => setExpandedInboxId(expandedInboxId === todo.id ? null : todo.id)}
+                      aria-expanded={expandedInboxId === todo.id}
+                    >
+                      <b>{urgencyLabel(todo.urgency)}</b>
+                      <span>{todo.title}</span>
+                      {todo.dueDate && <em>{todo.dueDate}</em>}
+                    </button>
+                    <small className="inbox-item-source">
+                      <AccountIcon account={accountForTodo(todo, inbox.accounts)} />
+                      <span>{todo.subject || todo.contactName || todo.accountLabel || "Gmail"}</span>
+                      <button type="button" className="inbox-row-actions-toggle" aria-label="Show inbox todo actions" onClick={() => setOpenInboxRailId(openInboxRailId === todo.id ? null : todo.id)}>•••</button>
+                    </small>
+                    {expandedInboxId === todo.id && (
+                      <div className="inbox-item-expanded">
+                        <span><strong>Why:</strong> {todo.reason}</span>
+                        <span><strong>Action:</strong> {todo.suggestedAction}</span>
+                        {todo.suggestedDraft && <span><strong>Draft:</strong> {todo.suggestedDraft}</span>}
+                        <div className="inbox-item-actions">
+                          <button type="button" onClick={() => addInboxTodoToBoard(todo)}>Add to board</button>
+                          <button type="button" onClick={() => void fetchInboxEmailPreview(todo)}>
+                            {inboxPreview.loadingTodoId === todo.id ? "Loading" : preview ? "Hide email" : "Preview email"}
+                          </button>
+                          {todo.suggestedDraft && <button type="button" onClick={() => void copyInboxDraft(todo)}>Copy draft</button>}
+                          {todo.gmailUrl && <button type="button" onClick={() => window.open(todo.gmailUrl, "_blank", "noopener,noreferrer")}>Open Gmail</button>}
+                          <button type="button" onClick={() => setTodoStatus(todo.id, "done")}>Done</button>
+                          <button type="button" onClick={() => setTodoStatus(todo.id, "dismissed")}>Dismiss</button>
+                        </div>
+                        {previewError && <span className="inbox-email-preview-error">{previewError}</span>}
+                        {preview && (
+                          <div className="inbox-email-preview">
+                            <div className="inbox-email-preview-header">
+                              <strong>{preview.subject || todo.subject || "Email"}</strong>
+                              {preview.date && <span>{formatBoardTime(preview.date)}</span>}
+                            </div>
+                            {preview.from && <span className="inbox-email-preview-meta">From: {preview.from}</span>}
+                            <pre className="inbox-email-preview-body">{preview.bodyText || preview.snippet || "No preview text."}</pre>
+                            {preview.bodyTruncated && <span className="inbox-email-preview-meta">Preview truncated.</span>}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="inbox-action-rail" aria-label={`${todo.title} actions`}>
+                    {actions.map((action) => (
+                      <button
+                        key={action.id}
+                        type="button"
+                        className={`inbox-action-button inbox-action-${action.id}`}
+                        aria-label={action.label}
+                        title={action.label}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          action.run();
+                          setOpenInboxRailId(null);
+                          setSwipingInbox(null);
+                        }}
+                      >
+                        <span aria-hidden="true">{action.icon}</span>
+                      </button>
+                    ))}
                   </div>
                 </div>
-              )}
-            </div>
-          ))}
+              </div>
+            );
+          })}
           {inbox.lastUpdated && <span className="inbox-updated">Updated {formatBoardTime(inbox.lastUpdated)}</span>}
         </section>
 
@@ -2333,24 +2498,29 @@ function renderText(ctx: CanvasRenderingContext2D, object: TextObject, settings:
   ctx.rotate(object.rotation);
   ctx.globalAlpha = object.opacity;
   const ink = resolveInk(object.color, settings);
+  ctx.strokeStyle = ink;
+  ctx.globalAlpha = object.opacity * 0.42;
+  ctx.lineWidth = Math.max(1.4, object.fontSize * 0.035);
+  ctx.lineJoin = "round";
+  ctx.strokeRect(0, 0, object.width, object.height);
+  ctx.globalAlpha = object.opacity;
   ctx.fillStyle = ink;
   ctx.shadowColor = settings.themeMode === "light" ? "rgba(0,0,0,0.12)" : "rgba(255,255,255,0.24)";
   ctx.shadowBlur = settings.chalkTexture ? 5 : 0;
   ctx.font = `${object.fontSize}px ${TEXT_FONT_FAMILY}`;
   ctx.textBaseline = "top";
   ctx.textAlign = "left";
-  ctx.lineJoin = "round";
 
-  const lines = wrapText(ctx, object.text, object.width, object.fontSize);
+  const lines = wrapText(ctx, object.text, object.width - TEXT_BOX_PADDING * 2, object.fontSize);
   const lineHeightFactor = object.lineHeight ?? DEFAULT_TEXT_LINE_HEIGHT;
   const lineHeight = object.fontSize * lineHeightFactor;
   const visualTopOffset = getTextVisualTopOffset(ctx, object.fontSize, lineHeightFactor);
   lines.forEach((line, index) => {
     const y = visualTopOffset + index * lineHeight;
-    renderHighlightedTextLine(ctx, line, 0, y, ink);
+    renderHighlightedTextLine(ctx, line, TEXT_BOX_PADDING, y + TEXT_BOX_PADDING, ink);
     if (settings.chalkTexture) {
       ctx.globalAlpha = object.opacity * 0.13;
-      renderHighlightedTextLine(ctx, line, seededNoise(object.id, index) * 1.4, y + seededNoise(object.id, index + 99) * 1.2, ink);
+      renderHighlightedTextLine(ctx, line, TEXT_BOX_PADDING + seededNoise(object.id, index) * 1.4, TEXT_BOX_PADDING + y + seededNoise(object.id, index + 99) * 1.2, ink);
       ctx.globalAlpha = object.opacity;
     }
   });
@@ -2468,7 +2638,7 @@ function renderSelection(ctx: CanvasRenderingContext2D, object: BoardObject, set
   ctx.save();
   ctx.strokeStyle = currentTheme(settings).handle;
   ctx.lineWidth = 1.2 / scale;
-  ctx.setLineDash([7 / scale, 6 / scale]);
+  if (object.type !== "text") ctx.setLineDash([7 / scale, 6 / scale]);
 
   if (object.type === "text") {
     ctx.translate(object.x, object.y);
@@ -2483,14 +2653,9 @@ function renderSelection(ctx: CanvasRenderingContext2D, object: BoardObject, set
         ctx.beginPath();
         ctx.arc(local.x, local.y, 7 / scale, 0, Math.PI * 2);
         ctx.stroke();
-      } else if (handle.name.length === 1) {
-        ctx.beginPath();
-        ctx.arc(local.x, local.y, 4.5 / scale, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
       } else {
         ctx.beginPath();
-        ctx.roundRect(local.x - 5 / scale, local.y - 5 / scale, 10 / scale, 10 / scale, 2.5 / scale);
+        ctx.roundRect(local.x - 5 / scale, local.y - 5 / scale, 10 / scale, 10 / scale, 1.5 / scale);
         ctx.fill();
         ctx.stroke();
       }
@@ -2969,20 +3134,22 @@ function applyMove(object: BoardObject, original: BoardObject, dx: number, dy: n
 
 function applyResize(object: BoardObject, original: BoardObject, handle: string, dx: number, dy: number) {
   if (object.type === "text" && original.type === "text") {
-    const minWidth = 80;
-    const minHeight = Math.max(40, object.fontSize * (object.lineHeight ?? DEFAULT_TEXT_LINE_HEIGHT));
-    if (handle.includes("e")) object.width = Math.max(minWidth, original.width + dx);
-    if (handle.includes("s")) object.height = Math.max(minHeight, original.height + dy);
+    const constraints = textBoxConstraints(original);
+    if (handle.includes("e")) object.width = Math.max(constraints.minWidth, original.width + dx);
+    if (handle.includes("s")) object.height = Math.max(textBoxConstraints(object, object.width).minHeight, original.height + dy);
     if (handle.includes("w")) {
-      const width = Math.max(minWidth, original.width - dx);
+      const width = Math.max(constraints.minWidth, original.width - dx);
       object.x = original.x + (original.width - width);
       object.width = width;
     }
     if (handle.includes("n")) {
-      const height = Math.max(minHeight, original.height - dy);
+      const height = Math.max(textBoxConstraints(object, object.width).minHeight, original.height - dy);
       object.y = original.y + (original.height - height);
       object.height = height;
     }
+    const finalConstraints = textBoxConstraints(object, object.width);
+    object.width = Math.max(object.width, finalConstraints.minWidth);
+    object.height = Math.max(object.height, finalConstraints.minHeight);
     object.updatedAt = Date.now();
   } else if (object.type === "stroke" && original.type === "stroke") {
     const transform = resizeTransform(original.bbox, handle, dx, dy, 8);
@@ -3133,9 +3300,10 @@ function makeEditorStyle(object: TextObject, viewport: Viewport): React.CSSPrope
     left: `${screen.x}px`,
     top: `${screen.y}px`,
     width: `${object.width * viewport.scale}px`,
-    height: `${Math.max(object.height, object.fontSize * 1.35) * viewport.scale}px`,
+    height: `${Math.max(object.height, textBoxConstraints(object).minHeight) * viewport.scale}px`,
     fontSize: `${scaledFontSize}px`,
     lineHeight: `${scaledLineHeight}px`,
+    padding: `${TEXT_BOX_PADDING * viewport.scale}px`,
     fontFamily: TEXT_FONT_FAMILY,
     transform: `rotate(${object.rotation ?? 0}rad)`,
     transformOrigin: "0 0",
@@ -3145,14 +3313,29 @@ function makeEditorStyle(object: TextObject, viewport: Viewport): React.CSSPrope
 function measureTextBox(object: TextObject) {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
-  if (!ctx) return { width: object.width, height: object.height };
+  if (!ctx) return { width: object.width, height: object.height, minWidth: TEXT_BOX_MIN_WIDTH, minHeight: TEXT_BOX_MIN_HEIGHT };
   ctx.font = `${object.fontSize}px ${TEXT_FONT_FAMILY}`;
-  const lines = wrapText(ctx, object.text || " ", object.width, object.fontSize);
+  const lines = wrapText(ctx, object.text || " ", object.width - TEXT_BOX_PADDING * 2, object.fontSize);
   const height = Math.max(lines.length, 1) * object.fontSize * (object.lineHeight ?? DEFAULT_TEXT_LINE_HEIGHT);
-  return { width: object.width, height };
+  const longestTokenWidth = longestTextTokenWidth(ctx, object.text || " ");
+  const minWidth = Math.max(TEXT_BOX_MIN_WIDTH, longestTokenWidth + TEXT_BOX_PADDING * 2);
+  const minHeight = Math.max(TEXT_BOX_MIN_HEIGHT, height + TEXT_BOX_PADDING * 2);
+  return { width: object.width, height, minWidth, minHeight };
+}
+
+function textBoxConstraints(object: TextObject, width = object.width) {
+  return measureTextBox({ ...object, width: Math.max(width, TEXT_BOX_MIN_WIDTH) });
+}
+
+function longestTextTokenWidth(ctx: CanvasRenderingContext2D, text: string) {
+  return text
+    .split(/\s+/)
+    .filter(Boolean)
+    .reduce((max, token) => Math.max(max, ctx.measureText(token).width), 0);
 }
 
 function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, fontSize: number) {
+  const safeMaxWidth = Math.max(maxWidth, fontSize * 2);
   const rawLines = text.split("\n");
   const lines: string[] = [];
   for (const rawLine of rawLines) {
@@ -3160,7 +3343,7 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number,
     let line = "";
     for (const word of words) {
       const candidate = line ? `${line} ${word}` : word;
-      if (ctx.measureText(candidate).width > maxWidth && line) {
+      if (ctx.measureText(candidate).width > safeMaxWidth && line) {
         lines.push(line);
         line = word;
       } else {
@@ -3279,6 +3462,18 @@ async function fetchInboxTodosFromApi() {
   };
 }
 
+async function fetchInboxEmailPreviewFromApi(todo: InboxTodo) {
+  const params = new URLSearchParams({
+    preview: "1",
+    accountId: todo.accountId || "",
+    messageId: todo.emailMessageId || "",
+  });
+  const response = await fetch(`/api/scheduled-inbox/todos?${params.toString()}`, { headers: { Accept: "application/json" } });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(typeof data.error === "string" ? data.error : "Could not load email preview.");
+  return data as InboxEmailPreview;
+}
+
 function loadInboxStatus(): InboxStatusState {
   try {
     const parsed = JSON.parse(localStorage.getItem(INBOX_STATUS_STORAGE_KEY) ?? "{}") as Partial<InboxStatusState>;
@@ -3318,7 +3513,7 @@ function saveStatusLabel(status: SaveStatus) {
 
 function formatInboxTodoText(todo: InboxTodo) {
   const detail = todo.subject || todo.contactName;
-  const header = `☐ ${todo.title}${detail ? ` — ${detail}` : ""}${todo.dueDate ? ` (${todo.dueDate})` : ""}`;
+  const header = `${todo.title}${detail ? ` — ${detail}` : ""}${todo.dueDate ? ` (${todo.dueDate})` : ""}`;
   return [
     header,
     "",
