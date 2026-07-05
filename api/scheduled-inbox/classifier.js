@@ -8,6 +8,10 @@ export const INBOX_BUCKETS = {
   EVENT_NO_ACTION: "EVENT_NO_ACTION",
   PROMOTION_NOISE: "PROMOTION_NOISE",
   SOCIAL_NOISE: "SOCIAL_NOISE",
+  PLATFORM_SYSTEM_NOISE: "PLATFORM_SYSTEM_NOISE",
+  SELF_EMAIL_NO_ACTION: "SELF_EMAIL_NO_ACTION",
+  BETTY_ANNAN_NO_ACTION: "BETTY_ANNAN_NO_ACTION",
+  REU_RIDE_NO_ACTION: "REU_RIDE_NO_ACTION",
   THREAD_CLOSED: "THREAD_CLOSED",
   LOW_CONFIDENCE_IGNORE: "LOW_CONFIDENCE_IGNORE",
 };
@@ -38,6 +42,25 @@ const EXPLICIT_ACTION_PATTERNS = [
   /\bby (tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
 ];
 
+const VENDOR_ACTION_PATTERNS = [
+  /\baction required\b/i,
+  /\bverify your account\b/i,
+  /\bsecurity alert\b/i,
+  /\bsuspicious sign-?in\b/i,
+  /\bpassword reset requested\b/i,
+  /\bpayment failed\b/i,
+  /\bfailed payment\b/i,
+  /\bbilling issue\b/i,
+  /\binvoice overdue\b/i,
+  /\baccount will be suspended\b/i,
+  /\bcomplete setup\b/i,
+  /\bconfirm recovery email\b/i,
+  /\bdeadline\b/i,
+  /\bexpires today\b/i,
+  /\brequires your response\b/i,
+  /\bdeployment failed\b/i,
+];
+
 const RSVP_PATTERNS = [
   /\brsvp\b/i,
   /\bconfirm (your )?(attendance|availability)\b/i,
@@ -55,10 +78,14 @@ const REPLY_PATTERNS = [
 ];
 
 const OPEN_LOOP_PATTERNS = [
+  /\bcould we\b/i,
+  /\bcan we\b/i,
   /\blet me know\b/i,
   /\bwhat do you think\b/i,
   /\bdoes that work\b/i,
   /\bwould you be able\b/i,
+  /\bwould it be possible\b/i,
+  /\bcould you connect me\b/i,
   /\bcould you\b/i,
   /\bcan you\b/i,
   /\bnext steps?\b/i,
@@ -67,6 +94,12 @@ const OPEN_LOOP_PATTERNS = [
   /\bavailable\b/i,
   /\bavailability\b/i,
   /\binterested\b/i,
+  /\bopportunit(?:y|ies)\b/i,
+  /\binternship\b/i,
+  /\bco-?op\b/i,
+  /\bresearch\b/i,
+  /\blab\b/i,
+  /\bresume\b/i,
   /\bwaiting on\b/i,
 ];
 
@@ -137,6 +170,34 @@ const EVENT_NO_ACTION_PATTERNS = [
 ];
 
 const DIRECT_ACTION_VERBS = /\b(send|complete|submit|upload|review|confirm|sign|fill out|bring|prepare)\b/i;
+const BETTY_ACTION_PATTERN = /\b(action required|required|mandatory|fill out|complete this form|submit|rsvp|confirm|deadline|due by|respond by|send me|please send)\b/i;
+const REU_RIDE_PATTERN = /\b(ride|reu|research experience for undergraduates|professional development|pd|seminar|workshop|speaker|event|lunch|reminder|program announcement|cohort)\b/i;
+const REU_RIDE_ACTION_PATTERN = /\b(rsvp|fill out|form|required|mandatory|confirm|submit|register|sign up|respond by|deadline|due|upload|complete)\b/i;
+const PLATFORM_SYSTEM_DOMAINS = [
+  "chatgpt.com",
+  "openai.com",
+  "google.com",
+  "accounts.google.com",
+  "workspace.google.com",
+  "drive.google.com",
+  "dropbox.com",
+  "dropboxmail.com",
+  "quizlet.com",
+  "github.com",
+  "vercel.com",
+];
+const PLATFORM_SYSTEM_NAMES = [
+  "chatgpt",
+  "openai",
+  "google",
+  "google workspace",
+  "google account",
+  "google drive",
+  "dropbox",
+  "quizlet",
+  "github",
+  "vercel",
+];
 
 export function classifyMessage({ message, userEmails = [], threadMessages = [], now = new Date() }) {
   const headers = headerMap(message);
@@ -156,12 +217,20 @@ export function classifyMessage({ message, userEmails = [], threadMessages = [],
 
   const explicitAction = EXPLICIT_ACTION_PATTERNS.some((pattern) => pattern.test(text));
   const explicitRsvp = RSVP_PATTERNS.some((pattern) => pattern.test(text));
+  const vendorAction = VENDOR_ACTION_PATTERNS.some((pattern) => pattern.test(text));
   const replySignal = REPLY_PATTERNS.some((pattern) => pattern.test(text));
   const promotion = PROMOTION_PATTERNS.some((pattern) => pattern.test(text));
   const social = SOCIAL_PATTERNS.some((pattern) => pattern.test(text));
   const eventOnly = EVENT_NO_ACTION_PATTERNS.some((pattern) => pattern.test(text));
   const freke = /\bfreke\b/i.test(text);
   const ride = /\b(ride|reu)\b/i.test(text);
+  const bettyAnnan = /\bbetty\s+annan\b/i.test(text);
+  const platformNoise = isPlatformSystemNoise({ from, subject, snippet });
+  const reuRideNoise = REU_RIDE_PATTERN.test(text);
+
+  if (isSelfOnlyMessage({ message, threadMessages, userEmails })) {
+    return { bucket: INBOX_BUCKETS.SELF_EMAIL_NO_ACTION, confidence: 0.96, reasons: ["self_email"], isTodo: false };
+  }
 
   if (sentByUser) {
     return classifySentFollowUp({ message, userEmails, threadMessages, now });
@@ -170,7 +239,19 @@ export function classifyMessage({ message, userEmails = [], threadMessages = [],
   const handledThread = classifyHandledIncomingThread({ message, userEmails, threadMessages });
   if (handledThread) return handledThread;
 
-  if (CLOSED_PATTERNS.some((pattern) => pattern.test(text)) && !explicitAction && !explicitRsvp && !replySignal) {
+  if (platformNoise && !vendorAction) {
+    bucket = INBOX_BUCKETS.PLATFORM_SYSTEM_NOISE;
+    confidence = 0.95;
+    reasons.push("platform_system_noise");
+  } else if (bettyAnnan && !BETTY_ACTION_PATTERN.test(text)) {
+    bucket = INBOX_BUCKETS.BETTY_ANNAN_NO_ACTION;
+    confidence = 0.94;
+    reasons.push("betty_annan_default_suppression");
+  } else if (reuRideNoise && !REU_RIDE_ACTION_PATTERN.test(text)) {
+    bucket = INBOX_BUCKETS.REU_RIDE_NO_ACTION;
+    confidence = 0.92;
+    reasons.push("reu_ride_default_suppression");
+  } else if (CLOSED_PATTERNS.some((pattern) => pattern.test(text)) && !explicitAction && !explicitRsvp && !replySignal && !vendorAction) {
     bucket = INBOX_BUCKETS.THREAD_CLOSED;
     confidence = 0.9;
     reasons.push("closed_language");
@@ -190,10 +271,10 @@ export function classifyMessage({ message, userEmails = [], threadMessages = [],
     bucket = INBOX_BUCKETS.RSVP_REQUIRED;
     confidence = 0.82;
     reasons.push("rsvp_phrase");
-  } else if (explicitAction || DIRECT_ACTION_VERBS.test(text)) {
+  } else if (explicitAction || vendorAction || DIRECT_ACTION_VERBS.test(text)) {
     bucket = INBOX_BUCKETS.ACTION_REQUIRED;
-    confidence = explicitAction ? 0.84 : 0.73;
-    reasons.push(explicitAction ? "explicit_action" : "action_verb");
+    confidence = explicitAction || vendorAction ? 0.84 : 0.73;
+    reasons.push(vendorAction ? "vendor_action" : explicitAction ? "explicit_action" : "action_verb");
   } else if (replySignal) {
     bucket = INBOX_BUCKETS.REPLY_REQUIRED;
     confidence = 0.76;
@@ -220,6 +301,10 @@ export function classifyMessage({ message, userEmails = [], threadMessages = [],
     confidence += 0.08;
     reasons.push("freke_direct_signal");
   }
+  if (bettyAnnan && TODO_BUCKETS.has(bucket)) {
+    confidence -= 0.06;
+    reasons.push("betty_annan_requires_high_confidence");
+  }
   if (ride && recipients > 4 && TODO_BUCKETS.has(bucket) && !explicitAction && !explicitRsvp) {
     confidence -= 0.2;
     reasons.push("ride_bulk_suppression");
@@ -240,6 +325,12 @@ export function classifyMessage({ message, userEmails = [], threadMessages = [],
 }
 
 function classifySentFollowUp({ message, userEmails, threadMessages, now }) {
+  if (isSelfOnlyMessage({ message, threadMessages, userEmails })) {
+    return { bucket: INBOX_BUCKETS.SELF_EMAIL_NO_ACTION, confidence: 0.96, reasons: ["self_email"], isTodo: false };
+  }
+  if (isPlatformSystemNoise({ from: headerMap(message).from ?? "", subject: headerMap(message).subject ?? "", snippet: message.snippet ?? "" })) {
+    return { bucket: INBOX_BUCKETS.PLATFORM_SYSTEM_NOISE, confidence: 0.94, reasons: ["platform_system_sent_noise"], isTodo: false };
+  }
   const messages = threadMessages.length ? threadMessages : [message];
   const latestUserMessage = latestMessageMatching(messages, (candidate) => isFromUser(headerMap(candidate).from ?? "", userEmails));
   const latestUserAsk = latestMessageMatching(messages, (candidate) => {
@@ -323,6 +414,27 @@ function hasClosureSignal(text) {
   return CLOSED_PATTERNS.some((pattern) => pattern.test(text));
 }
 
+function isPlatformSystemNoise({ from = "", subject = "", snippet = "" }) {
+  const fromLower = from.toLowerCase();
+  const text = `${from} ${subject} ${snippet}`.toLowerCase();
+  const senderEmail = extractEmail(fromLower);
+  const senderDomain = senderEmail?.split("@")[1] ?? "";
+  return PLATFORM_SYSTEM_DOMAINS.some((domain) => senderDomain === domain || senderDomain.endsWith(`.${domain}`)) ||
+    PLATFORM_SYSTEM_NAMES.some((name) => text.includes(name));
+}
+
+function isSelfOnlyMessage({ message, threadMessages, userEmails }) {
+  const ownEmails = new Set(userEmails.map((email) => email.toLowerCase()).filter(Boolean));
+  if (!ownEmails.size) return false;
+  const messages = threadMessages.length ? threadMessages : [message];
+  const participantEmails = new Set(messages.flatMap((candidate) => {
+    const headers = headerMap(candidate);
+    return [headers.from, headers.to, headers.cc].flatMap((value) => extractEmails(value ?? ""));
+  }));
+  if (!participantEmails.size) return false;
+  return [...participantEmails].every((email) => ownEmails.has(email));
+}
+
 function latestMessageMatching(messages, predicate) {
   return [...messages]
     .filter(predicate)
@@ -365,6 +477,14 @@ function isFromUser(from, userEmails) {
 
 function recipientCount(value) {
   return value.split(",").map((part) => part.trim()).filter(Boolean).length;
+}
+
+function extractEmails(value) {
+  return (value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) ?? []).map((email) => email.toLowerCase());
+}
+
+function extractEmail(value) {
+  return extractEmails(value)[0];
 }
 
 function clampConfidence(value) {

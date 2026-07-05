@@ -148,6 +148,9 @@ textarea {
   z-index: 8;
   left: 50%;
   bottom: 30px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
   max-width: min(460px, calc(100vw - 32px));
   padding: 13px 18px;
   color: var(--gb-sidebar-text, rgba(255, 255, 255, 0.92));
@@ -158,8 +161,24 @@ textarea {
   font-family: "Segoe Print", "Comic Sans MS", cursive;
   font-size: 15px;
   line-height: 1.22;
-  pointer-events: none;
   transform: translateX(-50%);
+}
+
+.toast button {
+  padding: 3px 9px;
+  color: inherit;
+  background: color-mix(in srgb, var(--gb-ink, #fff) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--gb-ink, #fff) 20%, transparent);
+  border-radius: 999px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+
+.toast button:hover,
+.toast button:focus-visible {
+  background: color-mix(in srgb, var(--gb-ink, #fff) 18%, transparent);
+  outline: 0;
 }
 
 .smart-find {

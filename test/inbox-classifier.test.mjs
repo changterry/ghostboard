@@ -96,6 +96,84 @@ test("suppresses RIDE bulk event but keeps RIDE direct action", () => {
   assert.equal(todos[0].bucket, INBOX_BUCKETS.RSVP_REQUIRED);
 });
 
+test("suppresses platform system noise but keeps urgent vendor action", () => {
+  const productUpdate = messageFixture({
+    id: "openai-product-update",
+    from: "OpenAI <updates@openai.com>",
+    to: "Terry <terry@example.com>",
+    subject: "New ChatGPT features this week",
+    snippet: "Here is a product update and newsletter digest.",
+  });
+  const billingIssue = messageFixture({
+    id: "vercel-billing-action",
+    from: "Vercel <billing@vercel.com>",
+    to: "Terry <terry@example.com>",
+    subject: "Action required: payment failed",
+    snippet: "Your payment failed and requires your response.",
+  });
+
+  assert.deepEqual(normalizeMessages([productUpdate], ["terry@example.com"]), []);
+  const todos = normalizeMessages([billingIssue], ["terry@example.com"]);
+  assert.equal(todos.length, 1);
+  assert.equal(todos[0].bucket, INBOX_BUCKETS.ACTION_REQUIRED);
+});
+
+test("suppresses self-only email threads", () => {
+  const selfNote = messageFixture({
+    id: "self-note",
+    from: "Terry <terry@example.com>",
+    to: "Terry School <tchang@umass.edu>",
+    subject: "note to self",
+    snippet: "Can you remember this?",
+  });
+
+  assert.deepEqual(normalizeMessages([selfNote], ["terry@example.com", "tchang@umass.edu"]), []);
+});
+
+test("suppresses Betty Annan by default but allows explicit required action", () => {
+  const genericBetty = messageFixture({
+    id: "betty-generic",
+    from: "Betty Annan <betty.annan@umass.edu>",
+    to: "Terry <terry@example.com>",
+    subject: "Program reminder",
+    snippet: "Reminder about the upcoming session.",
+  });
+  const requiredBetty = messageFixture({
+    id: "betty-required",
+    from: "Betty Annan <betty.annan@umass.edu>",
+    to: "Terry <terry@example.com>",
+    subject: "Required form",
+    snippet: "Please submit this required form by Friday.",
+  });
+
+  assert.deepEqual(normalizeMessages([genericBetty], ["terry@example.com"]), []);
+  const todos = normalizeMessages([requiredBetty], ["terry@example.com"]);
+  assert.equal(todos.length, 1);
+  assert.equal(todos[0].bucket, INBOX_BUCKETS.ACTION_REQUIRED);
+});
+
+test("suppresses generic REU and RIDE announcements", () => {
+  const reuReminder = messageFixture({
+    id: "reu-pd-reminder",
+    from: "REU Program <reu@umass.edu>",
+    to: "cohort@umass.edu, interns@umass.edu, staff@umass.edu",
+    subject: "REU professional development reminder",
+    snippet: "Join us for today's PD workshop and lunch.",
+  });
+  const rideRequired = messageFixture({
+    id: "ride-required-poster",
+    from: "RIDE Program <ride@umass.edu>",
+    to: "Terry <terry@example.com>",
+    subject: "Poster abstract",
+    snippet: "Submit your poster abstract by Friday.",
+  });
+
+  assert.deepEqual(normalizeMessages([reuReminder], ["terry@example.com"]), []);
+  const todos = normalizeMessages([rideRequired], ["terry@example.com"]);
+  assert.equal(todos.length, 1);
+  assert.equal(todos[0].bucket, INBOX_BUCKETS.ACTION_REQUIRED);
+});
+
 test("requires open-loop language before creating sent follow-up todo", () => {
   const oldSentOpenLoop = messageFixture({
     id: "sent-open-loop",

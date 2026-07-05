@@ -248,6 +248,12 @@ type InboxPreviewState = {
   errorByTodoId: Record<string, string>;
 };
 
+type ToastState = {
+  message: string;
+  actionLabel?: string;
+  action?: () => void;
+};
+
 type InboxPanelState = {
   isOpen: boolean;
   width: number;
@@ -376,7 +382,7 @@ function Ghostboard() {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>(navigator.onLine ? "saved" : "offline");
   const [titleDraft, setTitleDraft] = useState(activeLibraryBoard(libraryRef.current).title);
   const [titleEditing, setTitleEditing] = useState(false);
-  const [toast, setToast] = useState("");
+  const [toast, setToast] = useState<ToastState | null>(null);
   const [tick, setTick] = useState(0);
   runtimeBoardState = boardRef.current;
   activeEditorRef.current = editor;
@@ -627,6 +633,29 @@ function Ghostboard() {
     showToast(status === "done" ? "Marked done" : "Hidden");
   }
 
+  function restoreTodoStatus(todoId: string) {
+    setInboxStatus((current) => {
+      const next: InboxStatusState = {
+        done: { ...current.done },
+        dismissed: { ...current.dismissed },
+      };
+      delete next.done[todoId];
+      delete next.dismissed[todoId];
+      saveInboxStatus(next);
+      setInbox((inboxCurrent) => ({ ...inboxCurrent, todos: applyInboxStatus(inboxCurrent.todos, next) }));
+      return next;
+    });
+    showToast("Restored");
+  }
+
+  function hideInboxTodoWithUndo(todo: InboxTodo) {
+    setTodoStatus(todo.id, "dismissed");
+    showToast("Hidden", {
+      actionLabel: "Undo",
+      action: () => restoreTodoStatus(todo.id),
+    });
+  }
+
   function updateInboxPanel(patch: Partial<InboxPanelState>) {
     setInboxPanel((current) => {
       const next = {
@@ -787,6 +816,10 @@ function Ghostboard() {
     if (Math.abs(event.deltaX) < Math.abs(event.deltaY) * 1.25) return;
     event.preventDefault();
     event.stopPropagation();
+    if (Math.abs(event.deltaX) > 64) {
+      hideInboxTodoWithUndo(todo);
+      return;
+    }
     const actionCount = inboxActionsForTodo(todo).length;
     const maxOffset = Math.min(220, actionCount * 44);
     const currentOffset = swipingInbox?.id === todo.id ? swipingInbox.offset : openInboxRailId === todo.id ? maxOffset : 0;
@@ -1131,13 +1164,13 @@ function Ghostboard() {
     return true;
   }
 
-  function showToast(message: string) {
-    setToast(message);
+  function showToast(message: string, options: Pick<ToastState, "actionLabel" | "action"> = {}) {
+    setToast({ message, ...options });
     if (toastTimerRef.current != null) window.clearTimeout(toastTimerRef.current);
     toastTimerRef.current = window.setTimeout(() => {
-      setToast("");
+      setToast(null);
       toastTimerRef.current = null;
-    }, 1300);
+    }, options.action ? 3600 : 1300);
   }
 
   function selectionIdsForObject(object: BoardObject, objects = boardRef.current.objects) {
@@ -1958,7 +1991,23 @@ function Ghostboard() {
         />
       )}
 
-      {toast && <div className="toast" role="status">{toast}</div>}
+      {toast && (
+        <div className="toast" role="status">
+          <span>{toast.message}</span>
+          {toast.action && (
+            <button
+              type="button"
+              onClick={() => {
+                if (toastTimerRef.current != null) window.clearTimeout(toastTimerRef.current);
+                toastTimerRef.current = null;
+                toast.action?.();
+              }}
+            >
+              {toast.actionLabel || "Undo"}
+            </button>
+          )}
+        </div>
+      )}
 
       {smartFind.isOpen && (
         <div className="smart-find" role="search">
@@ -2454,7 +2503,20 @@ function Ghostboard() {
             const previewError = inboxPreview.errorByTodoId[todo.id];
             const isExpanded = expandedInboxId === todo.id;
             return (
-              <article key={todo.id} className={`inbox-item urgency-${todo.urgency} ${isExpanded ? "is-expanded" : ""}`}>
+              <article
+                key={todo.id}
+                className={`inbox-item urgency-${todo.urgency} ${isExpanded ? "is-expanded" : ""}`}
+                onWheel={(event) => handleInboxItemWheel(event, todo)}
+                onAuxClick={(event) => {
+                  if (event.button !== 1) return;
+                  event.preventDefault();
+                  hideInboxTodoWithUndo(todo);
+                }}
+                onMouseDown={(event) => {
+                  if (event.button !== 1) return;
+                  event.preventDefault();
+                }}
+              >
                 <button
                   type="button"
                   className="inbox-item-main"
@@ -2482,7 +2544,7 @@ function Ghostboard() {
                       {todo.suggestedDraft && <button type="button" onClick={() => void copyInboxDraft(todo)}>Copy draft</button>}
                       {todo.gmailUrl && <button type="button" onClick={() => window.open(todo.gmailUrl, "_blank", "noopener,noreferrer")}>Open Gmail</button>}
                       <button type="button" onClick={() => setTodoStatus(todo.id, "done")}>Done</button>
-                      <button type="button" onClick={() => setTodoStatus(todo.id, "dismissed")}>Hide</button>
+                      <button type="button" onClick={() => hideInboxTodoWithUndo(todo)}>Hide</button>
                     </div>
                     {previewError && <span className="inbox-email-preview-error">{previewError}</span>}
                     {preview && (
