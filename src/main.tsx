@@ -193,13 +193,27 @@ type InboxTodo = {
   suggestedAction: string;
   suggestedDraft?: string;
   source: "scheduled_inbox" | "gmail";
+  accountId?: string;
+  accountLabel?: string;
+  accountEmail?: string;
+  accountIcon?: string;
+  accountColor?: string;
   status: InboxStatus;
   createdAt: string;
   updatedAt: string;
 };
 
+type InboxAccount = {
+  id: string;
+  label: string;
+  email: string;
+  icon?: string;
+  color?: string;
+};
+
 type InboxState = {
   todos: InboxTodo[];
+  accounts: InboxAccount[];
   loading: boolean;
   error: string;
   errorCode: InboxErrorCode;
@@ -276,17 +290,17 @@ const DEFAULT_STATE: BoardState = {
 
 let runtimeBoardState: BoardState = DEFAULT_STATE;
 
-const TOOL_LABELS: Array<{ id: SidebarAction; label: string; hint: string; icon: string }> = [
-  { id: "select", label: "Select / Move", hint: "Move, resize, rotate", icon: "↖" },
-  { id: "text", label: "Text", hint: "Click anywhere for big text", icon: "T" },
-  { id: "draw", label: "Draw", hint: "Freehand chalk", icon: "⌁" },
-  { id: "erase", label: "Erase", hint: "Delete whole strokes", icon: "⌫" },
-  { id: "shape", label: "Smart Shape", hint: "Snap rough shapes", icon: "△" },
-  { id: "pan", label: "Pan", hint: "Drag the board", icon: "" },
-  { id: "library", label: "Library", hint: "Saved Greyboards", icon: "G" },
-  { id: "find", label: "Smart Find", hint: "Find old text and maps", icon: "F" },
-  { id: "clear", label: "Clear Board", hint: "Remove everything", icon: "⌧" },
-  { id: "settings", label: "Settings", hint: "Snap and appearance", icon: "⚙" },
+const TOOL_LABELS: Array<{ id: SidebarAction; label: string; icon: string }> = [
+  { id: "select", label: "Select / Move", icon: "↖" },
+  { id: "text", label: "Text", icon: "T" },
+  { id: "draw", label: "Draw", icon: "⌁" },
+  { id: "erase", label: "Erase", icon: "⌫" },
+  { id: "shape", label: "Smart Shape", icon: "△" },
+  { id: "pan", label: "Pan", icon: "" },
+  { id: "library", label: "Library", icon: "" },
+  { id: "find", label: "Smart Find", icon: "" },
+  { id: "clear", label: "Clear Board", icon: "⌧" },
+  { id: "settings", label: "Settings", icon: "⚙" },
 ];
 
 function Ghostboard() {
@@ -313,9 +327,10 @@ function Ghostboard() {
   const [inputGuideMode, setInputGuideMode] = useState<InputGuideMode>(activeLibraryBoard(libraryRef.current).inputGuideMode ?? "mouse");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [smartFind, setSmartFind] = useState<SmartFindState>(SMART_FIND_EMPTY);
-  const [inbox, setInbox] = useState<InboxState>({ todos: [], loading: true, error: "", errorCode: "" });
+  const [inbox, setInbox] = useState<InboxState>({ todos: [], accounts: [], loading: true, error: "", errorCode: "" });
   const [inboxStatus, setInboxStatus] = useState<InboxStatusState>(loadInboxStatus());
   const [expandedInboxId, setExpandedInboxId] = useState<string | null>(null);
+  const [accountLegendOpen, setAccountLegendOpen] = useState(false);
   const [setupNotesOpen, setSetupNotesOpen] = useState(false);
   const [libraryTick, setLibraryTick] = useState(0);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>(navigator.onLine ? "saved" : "offline");
@@ -520,9 +535,10 @@ function Ghostboard() {
   async function fetchInboxTodos() {
     setInbox((current) => ({ ...current, loading: true, error: "", errorCode: "" }));
     try {
-      const todos = USE_MOCK_INBOX ? mockInboxTodos() : await fetchInboxTodosFromApi();
+      const result = USE_MOCK_INBOX ? mockInboxResult() : await fetchInboxTodosFromApi();
       setInbox({
-        todos: applyInboxStatus(todos, inboxStatus),
+        todos: applyInboxStatus(result.todos, inboxStatus),
+        accounts: result.accounts,
         loading: false,
         error: "",
         errorCode: "",
@@ -532,6 +548,7 @@ function Ghostboard() {
       const message = error instanceof Error ? error.message : "Could not load inbox todos.";
       setInbox({
         todos: [],
+        accounts: [],
         loading: false,
         error: message,
         errorCode: message === "Gmail integration not configured" ? "config_missing" : "error",
@@ -599,6 +616,9 @@ function Ghostboard() {
         urgency: todo.urgency,
         contactName: todo.contactName,
         subject: todo.subject,
+        accountId: todo.accountId,
+        accountLabel: todo.accountLabel,
+        accountEmail: todo.accountEmail,
       },
     };
     const metrics = measureTextBox(text);
@@ -1943,11 +1963,22 @@ function Ghostboard() {
                     <path d="m8 8-4 4 4 4" />
                     <path d="m16 8 4 4-4 4" />
                   </svg>
+                ) : tool.id === "library" ? (
+                  <svg className="library-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M5 5.5h4.25a3.25 3.25 0 0 1 3.25 3.25V19a3 3 0 0 0-3-3H5z" />
+                    <path d="M19 5.5h-4.25a3.25 3.25 0 0 0-3.25 3.25V19a3 3 0 0 1 3-3H19z" />
+                    <path d="M5 16V5.5" />
+                    <path d="M19 16V5.5" />
+                  </svg>
+                ) : tool.id === "find" ? (
+                  <svg className="find-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="10.75" cy="10.75" r="5.75" />
+                    <path d="m15 15 4.25 4.25" />
+                  </svg>
                 ) : tool.icon}
               </span>
               <span>
                 <strong>{tool.label}</strong>
-                <small>{tool.hint}</small>
               </span>
             </button>
           ))}
@@ -1967,10 +1998,27 @@ function Ghostboard() {
         <section className="inbox-feed" aria-label="Inbox Feed">
           <div className="inbox-feed-header">
             <strong>Inbox Feed</strong>
-            <button type="button" onClick={() => void fetchInboxTodos()} disabled={inbox.loading}>
-              {inbox.loading ? "Loading" : "Refresh"}
-            </button>
+            <div className="inbox-feed-controls">
+              {inbox.accounts.length > 0 && (
+                <button type="button" className="inbox-account-pill" onClick={() => setAccountLegendOpen((open) => !open)} aria-expanded={accountLegendOpen}>
+                  {inbox.accounts.length} account{inbox.accounts.length === 1 ? "" : "s"}
+                </button>
+              )}
+              <button type="button" onClick={() => void fetchInboxTodos()} disabled={inbox.loading}>
+                {inbox.loading ? "Loading" : "Refresh"}
+              </button>
+            </div>
           </div>
+          {accountLegendOpen && inbox.accounts.length > 0 && (
+            <div className="inbox-account-legend">
+              {inbox.accounts.map((account) => (
+                <div key={account.id} className="inbox-account-row">
+                  <AccountIcon account={account} size="large" />
+                  <span>{account.email || account.label}</span>
+                </div>
+              ))}
+            </div>
+          )}
           {inbox.loading && (
             <div className="inbox-state">
               <strong>Checking inbox...</strong>
@@ -1988,8 +2036,10 @@ function Ghostboard() {
                   <span>Required env vars:</span>
                   <code>GOOGLE_CLIENT_ID</code>
                   <code>GOOGLE_CLIENT_SECRET</code>
-                  <code>GOOGLE_REFRESH_TOKEN</code>
-                  <code>SCHEDULED_INBOX_USER_EMAILS</code>
+                  <code>GMAIL_ACCOUNT_1_EMAIL</code>
+                  <code>GMAIL_ACCOUNT_1_REFRESH_TOKEN</code>
+                  <code>GMAIL_ACCOUNT_2_EMAIL</code>
+                  <code>GMAIL_ACCOUNT_2_REFRESH_TOKEN</code>
                   <small>No passwords. No frontend secrets.</small>
                 </div>
               )}
@@ -2020,7 +2070,10 @@ function Ghostboard() {
                 <span>{todo.title}</span>
                 {todo.dueDate && <em>{todo.dueDate}</em>}
               </button>
-              <small>{todo.subject || todo.contactName || "Gmail"}</small>
+              <small className="inbox-item-source">
+                <AccountIcon account={accountForTodo(todo, inbox.accounts)} />
+                <span>{todo.subject || todo.contactName || todo.accountLabel || "Gmail"}</span>
+              </small>
               {expandedInboxId === todo.id && (
                 <div className="inbox-item-expanded">
                   <span><strong>Why:</strong> {todo.reason}</span>
@@ -2242,6 +2295,22 @@ function Ghostboard() {
         </div>
       </aside>
     </main>
+  );
+}
+
+function AccountIcon({ account, size = "small" }: { account?: Partial<InboxAccount>; size?: "small" | "large" }) {
+  const icon = account?.icon || account?.label?.slice(0, 1) || "G";
+  const label = account?.email || account?.label || "Gmail";
+  const imageSrc = accountIconImage(icon, account?.email);
+  return (
+    <span
+      className={`account-icon account-icon-${size}`}
+      title={label}
+      aria-label={label}
+      style={{ "--account-color": account?.color || "#5f6fcb" } as React.CSSProperties}
+    >
+      {imageSrc ? <img src={imageSrc} alt="" /> : icon.slice(0, 2).toUpperCase()}
+    </span>
   );
 }
 
@@ -3204,7 +3273,10 @@ async function fetchInboxTodosFromApi() {
     }
     throw new Error("Could not load inbox todos.");
   }
-  return Array.isArray(data.todos) ? data.todos as InboxTodo[] : [];
+  return {
+    accounts: Array.isArray(data.accounts) ? data.accounts as InboxAccount[] : [],
+    todos: Array.isArray(data.todos) ? data.todos as InboxTodo[] : [],
+  };
 }
 
 function loadInboxStatus(): InboxStatusState {
@@ -3259,9 +3331,30 @@ function formatInboxTodoText(todo: InboxTodo) {
   ].join("\n");
 }
 
-function mockInboxTodos(): InboxTodo[] {
+function accountForTodo(todo: InboxTodo, accounts: InboxAccount[]) {
+  return accounts.find((account) => account.id === todo.accountId || account.email === todo.accountEmail) ?? {
+    id: todo.accountId || "gmail",
+    label: todo.accountLabel || "Gmail",
+    email: todo.accountEmail || "",
+    icon: todo.accountIcon,
+    color: todo.accountColor,
+  };
+}
+
+function accountIconImage(icon?: string, email?: string) {
+  const key = `${icon || ""} ${email || ""}`.toLowerCase();
+  if (key.includes("tchang") || key.trim() === "t") return "/account-icons/account-tchang.png";
+  if (key.includes("changg") || key.includes("bird")) return "/account-icons/account-changg.png";
+  return "";
+}
+
+function mockInboxResult(): { accounts: InboxAccount[]; todos: InboxTodo[] } {
   const now = new Date().toISOString();
-  return [
+  const accounts: InboxAccount[] = [
+    { id: "umass", label: "UMass", email: "tchang@umass.edu", icon: "T", color: "#e8b7d0" },
+    { id: "gmail", label: "Gmail", email: "changg.terry@gmail.com", icon: "bird", color: "#5f6fcb" },
+  ];
+  const todos: InboxTodo[] = [
     {
       id: "mock-shawn-followup",
       type: "follow_up",
@@ -3274,6 +3367,11 @@ function mockInboxTodos(): InboxTodo[] {
       suggestedAction: "Send short follow-up asking if Pelican is looking for a mechanical engineering intern or co-op.",
       suggestedDraft: "Hi Shawn, wanted to follow up quickly. I'm interested in learning whether Pelican is looking for a mechanical engineering intern or co-op. No rush, just wanted to stay on your radar.",
       source: "scheduled_inbox",
+      accountId: "gmail",
+      accountLabel: "Gmail",
+      accountEmail: "changg.terry@gmail.com",
+      accountIcon: "bird",
+      accountColor: "#5f6fcb",
       status: "open",
       createdAt: now,
       updatedAt: now,
@@ -3289,11 +3387,17 @@ function mockInboxTodos(): InboxTodo[] {
       reason: "Needs a response soon.",
       suggestedAction: "Reply with a concise update and ask for next steps.",
       source: "scheduled_inbox",
+      accountId: "umass",
+      accountLabel: "UMass",
+      accountEmail: "tchang@umass.edu",
+      accountIcon: "T",
+      accountColor: "#e8b7d0",
       status: "open",
       createdAt: now,
       updatedAt: now,
     },
   ];
+  return { accounts, todos };
 }
 
 function loadLibrary(): GreyboardLibrary {
@@ -3702,4 +3806,3 @@ function boardRefSafe(): BoardState {
 
 const root = createRoot(document.getElementById("root") as HTMLElement);
 root.render(<Ghostboard />);
-

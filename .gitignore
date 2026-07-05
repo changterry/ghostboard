@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .vercel/
+.superpowers/
 .DS_Store
 *.local
 npm-debug.log*

@@ -86,6 +86,28 @@ SCHEDULED_INBOX_USER_EMAILS=you@example.com,school@example.edu
 
 Only add `OPENAI_API_KEY` later if the server route is changed to use server-side AI classification. Do not expose any of these as `VITE_` variables.
 
+After changing Vercel environment variables, redeploy the Production deployment. Adding or editing env vars does not update an already-running deployment by itself.
+
+`GOOGLE_REFRESH_TOKEN` grants read access to the single Gmail account that approved the OAuth flow. `SCHEDULED_INBOX_USER_EMAILS` does not grant access to extra mailboxes; it only tells Greyboard which sender addresses count as you when it looks for sent-mail follow-ups.
+
+For two inboxes, keep one shared `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, then add one refresh token per account:
+
+```text
+GMAIL_ACCOUNT_1_LABEL=UMass
+GMAIL_ACCOUNT_1_EMAIL=tchang@umass.edu
+GMAIL_ACCOUNT_1_REFRESH_TOKEN=1//...
+GMAIL_ACCOUNT_1_ICON=T
+GMAIL_ACCOUNT_1_COLOR=#e8b7d0
+
+GMAIL_ACCOUNT_2_LABEL=Gmail
+GMAIL_ACCOUNT_2_EMAIL=changg.terry@gmail.com
+GMAIL_ACCOUNT_2_REFRESH_TOKEN=1//...
+GMAIL_ACCOUNT_2_ICON=bird
+GMAIL_ACCOUNT_2_COLOR=#5f6fcb
+```
+
+When numbered `GMAIL_ACCOUNT_*` values exist, Greyboard reads those accounts and shows a small account legend in the Inbox Feed.
+
 ### Google Cloud OAuth
 
 1. Create or open a Google Cloud project.
@@ -106,25 +128,107 @@ http://localhost:5173/oauth2callback
 
 ### Generate A Refresh Token
 
-In a local shell, set only local environment variables:
+Create a local-only env file:
 
 ```bash
-export GOOGLE_CLIENT_ID="..."
-export GOOGLE_CLIENT_SECRET="..."
+cp .env.local.example .env.local
+```
+
+Fill in:
+
+```text
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+SCHEDULED_INBOX_USER_EMAILS=
+```
+
+Then run:
+
+```bash
 pnpm gmail:token
 ```
 
-On Windows PowerShell:
-
-```powershell
-$env:GOOGLE_CLIENT_ID="..."
-$env:GOOGLE_CLIENT_SECRET="..."
-pnpm gmail:token
-```
+Shell env vars still work and override `.env.local` if both are present.
 
 Open the printed Google URL, approve Gmail read-only access, paste the returned authorization code, then copy the printed `GOOGLE_REFRESH_TOKEN` into Vercel environment variables.
 
 Do not commit the refresh token. Do not paste it into frontend code. Do not store it in localStorage.
+
+A refresh token that starts with `1//` is normal.
+
+### Validate Local Gmail OAuth
+
+After adding `GOOGLE_REFRESH_TOKEN` to `.env.local`, run:
+
+```bash
+pnpm gmail:check
+```
+
+Expected success:
+
+```text
+Gmail OAuth check passed.
+Authenticated Gmail profile loaded.
+Profile email: you@example.com
+Configured user email match: true
+```
+
+If this fails locally, fix the local Google OAuth values before touching Vercel.
+
+If the profile email is your personal Gmail but you expected UMass mail, Greyboard can only see UMass messages that are visible inside that authorized Gmail account. To read both mailboxes, run `pnpm gmail:token` once while signed into `tchang@umass.edu` and once while signed into `changg.terry@gmail.com`, then put those two refresh tokens into `GMAIL_ACCOUNT_1_REFRESH_TOKEN` and `GMAIL_ACCOUNT_2_REFRESH_TOKEN`.
+
+Sent follow-up todos have narrower limits: Greyboard checks only the authenticated account's Sent mail, looks at messages newer than 90 days and older than 7 days, checks the first batch of candidates, skips threads with a visible non-user reply after your sent message, and caps the final feed at 12 todos.
+
+### Production Debug Diagnostics
+
+This endpoint returns safe configuration diagnostics only:
+
+```text
+https://greyboard.vercel.app/api/scheduled-inbox/todos?debug=1
+```
+
+It shows whether env vars exist and the refresh token shape. It never returns secret values, access tokens, or email bodies.
+
+### Gmail OAuth Troubleshooting
+
+- A Google refresh token starting with `1//` is normal.
+- Do not wrap Vercel env vars in quotes.
+- Do not include spaces or line breaks in Vercel env vars.
+- The refresh token must be generated using the same `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` deployed to Vercel.
+- The refresh token reads the Gmail account shown by `pnpm gmail:check` as `Profile email`.
+- Include that profile email in `SCHEDULED_INBOX_USER_EMAILS`.
+- Add env vars to Production, not only Preview.
+- Redeploy after changing Vercel env vars.
+- If `pnpm gmail:check` passes but Vercel fails, the issue is probably Vercel env formatting, Vercel environment selection, or a missing redeploy.
+- If `pnpm gmail:check` fails with `invalid_grant`, regenerate the refresh token. The token may be revoked, malformed, copied incorrectly, expired, or generated for different client credentials.
+- If `pnpm gmail:check` fails with `invalid_client`, the client ID and client secret are wrong or mismatched.
+- If production returns `unauthorized_client`, check OAuth client type and Google Cloud project setup.
+- If production returns `access_denied`, check the Gmail account permissions and OAuth consent screen.
+- Make sure the Gmail API is enabled in Google Cloud.
+- If the OAuth consent screen is in Testing mode, add the Gmail account as a test user.
+
+### Vercel Verification Checklist
+
+1. In Vercel Project Settings, add exact env var names:
+   - `GOOGLE_CLIENT_ID`
+   - `GOOGLE_CLIENT_SECRET`
+   - `GMAIL_ACCOUNT_1_LABEL`
+   - `GMAIL_ACCOUNT_1_EMAIL`
+   - `GMAIL_ACCOUNT_1_REFRESH_TOKEN`
+   - `GMAIL_ACCOUNT_1_ICON`
+   - `GMAIL_ACCOUNT_1_COLOR`
+   - `GMAIL_ACCOUNT_2_LABEL`
+   - `GMAIL_ACCOUNT_2_EMAIL`
+   - `GMAIL_ACCOUNT_2_REFRESH_TOKEN`
+   - `GMAIL_ACCOUNT_2_ICON`
+   - `GMAIL_ACCOUNT_2_COLOR`
+2. Confirm each refresh token is raw text like `1//...`.
+3. Confirm there are no quotes, spaces, or line breaks around values.
+4. Confirm the token was generated with the same client ID and secret currently in Vercel.
+5. Confirm the env vars are added to Production.
+6. Redeploy the Production deployment.
+7. Open `/api/scheduled-inbox/todos?debug=1`.
+8. If debug looks configured, open `/api/scheduled-inbox/todos`.
 
 ### What The Route Returns
 

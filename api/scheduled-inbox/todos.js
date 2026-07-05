@@ -1,6 +1,13 @@
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 const GMAIL_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 const GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
+const LEGACY_REQUIRED_ENV = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN", "SCHEDULED_INBOX_USER_EMAILS"];
+const MAX_GMAIL_ACCOUNTS = 4;
+
+loadLocalEnvForDev();
 
 const PERSONAL_SIGNAL_WORDS = [
   "reply",
@@ -42,6 +49,8 @@ const IGNORE_PATTERNS = [
   /career fair/i,
   /job alert/i,
   /internship alert/i,
+  /linkedin jobs/i,
+  /linkedin@e\.linkedin\.com/i,
 ];
 
 export default async function handler(request, response) {
@@ -51,25 +60,37 @@ export default async function handler(request, response) {
     return;
   }
 
-  const required = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN"];
-  const missing = required.filter((key) => !process.env[key]);
-  if (missing.length) {
+  if (isDebugRequest(request)) {
+    response.status(200).json(buildDebugDiagnostics(process.env));
+    return;
+  }
+
+  const accounts = getConfiguredAccounts();
+  if (!accounts.length) {
     response.status(501).json({ error: "Gmail integration not configured", todos: [] });
     return;
   }
 
   try {
-    const accessToken = await getAccessToken();
-    const userEmails = getConfiguredUserEmails();
-    const [incomingMessages, sentMessages] = await Promise.all([
-      fetchCandidateMessages(accessToken, incomingQuery()),
-      fetchSentFollowUpMessages(accessToken, userEmails),
-    ]);
-    const todos = normalizeMessages([...incomingMessages, ...sentMessages], userEmails);
-    response.status(200).json({ todos });
+    const accountResults = await Promise.all(accounts.map(fetchTodosForAccount));
+    const todos = accountResults
+      .flatMap((result) => result.todos)
+      .sort((a, b) => urgencyRank(b.urgency) - urgencyRank(a.urgency) || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 12);
+    response.status(200).json({ accounts: accounts.map(publicAccount), todos });
   } catch (error) {
     const code = error instanceof GreyboardInboxError ? error.code : "scheduled_inbox_failed";
     console.error("Scheduled inbox failed", { code });
+    if (error instanceof GoogleOAuthError) {
+      response.status(500).json({
+        error: "Gmail auth failed",
+        googleError: error.googleError,
+        googleErrorDescription: error.googleErrorDescription,
+        code,
+        todos: [],
+      });
+      return;
+    }
     response.status(500).json({ error: "Could not load scheduled inbox todos", code, todos: [] });
   }
 }
@@ -81,18 +102,73 @@ class GreyboardInboxError extends Error {
   }
 }
 
-async function getAccessToken() {
+class GoogleOAuthError extends GreyboardInboxError {
+  constructor(data) {
+    super("google_token_refresh_failed");
+    this.googleError = typeof data?.error === "string" ? data.error : "unknown_error";
+    this.googleErrorDescription = typeof data?.error_description === "string" ? data.error_description : undefined;
+  }
+}
+
+async function fetchTodosForAccount(account) {
+  const accessToken = await getAccessToken(account);
+  const [incomingMessages, sentMessages] = await Promise.all([
+    fetchCandidateMessages(accessToken, incomingQuery()),
+    fetchSentFollowUpMessages(accessToken, account.userEmails),
+  ]);
+  return { account, todos: normalizeMessages([...incomingMessages, ...sentMessages], account.userEmails, publicAccount(account)) };
+}
+
+async function getAccessToken(account) {
   const body = new URLSearchParams({
-    client_id: process.env.GOOGLE_CLIENT_ID,
-    client_secret: process.env.GOOGLE_CLIENT_SECRET,
-    refresh_token: process.env.GOOGLE_REFRESH_TOKEN,
+    client_id: account.clientId,
+    client_secret: account.clientSecret,
+    refresh_token: account.refreshToken,
     grant_type: "refresh_token",
   });
   const tokenResponse = await fetch(GMAIL_TOKEN_URL, { method: "POST", body });
-  if (!tokenResponse.ok) throw new GreyboardInboxError("google_token_refresh_failed");
   const data = await tokenResponse.json();
+  if (!tokenResponse.ok) throw new GoogleOAuthError(data);
   if (!data.access_token) throw new GreyboardInboxError("google_access_token_missing");
   return data.access_token;
+}
+
+function isDebugRequest(request) {
+  const host = request.headers?.host || "localhost";
+  const url = new URL(request.url || "/", `https://${host}`);
+  return url.searchParams.get("debug") === "1";
+}
+
+function buildDebugDiagnostics(env = process.env) {
+  const accounts = getConfiguredAccounts(env);
+  const refreshToken = env.GOOGLE_REFRESH_TOKEN || accounts[0]?.refreshToken || "";
+  const configuredUserEmails = accounts.flatMap((account) => account.userEmails);
+  const missingEnv = accounts.length ? [] : LEGACY_REQUIRED_ENV.filter((key) => !env[key]);
+  const diagnostics = {
+    ok: missingEnv.length === 0,
+    environment: env.VERCEL_ENV || env.NODE_ENV || "local",
+    configured: {
+      GOOGLE_CLIENT_ID: Boolean(env.GOOGLE_CLIENT_ID),
+      GOOGLE_CLIENT_SECRET: Boolean(env.GOOGLE_CLIENT_SECRET),
+      GOOGLE_REFRESH_TOKEN: Boolean(env.GOOGLE_REFRESH_TOKEN) || accounts.some((account) => Boolean(account.refreshToken)),
+      SCHEDULED_INBOX_USER_EMAILS: Boolean(env.SCHEDULED_INBOX_USER_EMAILS) || configuredUserEmails.length > 0,
+      OPENAI_API_KEY: Boolean(env.OPENAI_API_KEY),
+    },
+    tokenShape: {
+      startsWith1SlashSlash: refreshToken.startsWith("1//"),
+      length: refreshToken.length,
+      hasWhitespace: /\s/.test(refreshToken),
+      hasQuotes: refreshToken.includes("\"") || refreshToken.includes("'"),
+    },
+    identityShape: {
+      hasConfiguredUserEmails: configuredUserEmails.length > 0,
+      configuredUserEmailsCount: configuredUserEmails.length,
+      configuredAccountsCount: accounts.length,
+    },
+    message: "Debug mode only shows env presence and token shape. It never returns secret values.",
+  };
+  if (missingEnv.length) diagnostics.missingEnv = missingEnv;
+  return diagnostics;
 }
 
 function incomingQuery() {
@@ -142,11 +218,11 @@ async function gmailFetch(url, accessToken) {
   return result.json();
 }
 
-function normalizeMessages(messages, userEmails) {
+function normalizeMessages(messages, userEmails, account) {
   const seen = new Set();
   const todos = [];
   for (const message of messages) {
-    const todo = toInboxTodo(message, userEmails);
+    const todo = toInboxTodo(message, userEmails, account);
     if (!todo || seen.has(todo.id)) continue;
     seen.add(todo.id);
     todos.push(todo);
@@ -156,7 +232,7 @@ function normalizeMessages(messages, userEmails) {
     .slice(0, 12);
 }
 
-function toInboxTodo(message, userEmails) {
+function toInboxTodo(message, userEmails, account) {
   const headers = headerMap(message);
   const from = headers.from ?? "";
   const to = headers.to ?? "";
@@ -196,6 +272,11 @@ function toInboxTodo(message, userEmails) {
     suggestedAction: sentByUser ? "Send a short follow-up and ask about next steps." : suggestedActionForType(type),
     suggestedDraft: suggestedDraftForTodo(type, contactName, subject, sentByUser),
     source: "gmail",
+    accountId: account?.id,
+    accountLabel: account?.label,
+    accountEmail: account?.email,
+    accountIcon: account?.icon,
+    accountColor: account?.color,
     status: "open",
     createdAt: date.toISOString(),
     updatedAt: new Date().toISOString(),
@@ -239,14 +320,14 @@ function shouldIgnoreMessage(text, from, to, cc, sentByUser) {
 function looksActionWorthy(text, from, to, cc) {
   const lower = text.toLowerCase();
   if (PERSONAL_SIGNAL_WORDS.some((word) => lower.includes(word))) return true;
-  if (/@(edu|umass\.edu)>?/i.test(from)) return true;
+  if (/@(?:[^>\s,]+\.)?edu(?:[>\s,]|$)/i.test(from)) return true;
   if (recipientCount(`${to},${cc}`) <= 3 && !/(newsletter|alert|promotion|webinar|event)/i.test(lower)) return true;
   return false;
 }
 
 function inferType(text, from) {
   const lower = text.toLowerCase();
-  if (/prof|professor|reu|lab|research|\.edu|university|college/.test(`${lower} ${from.toLowerCase()}`)) return "professor";
+  if (/prof|professor|reu|lab|research|university|college/.test(`${lower} ${from.toLowerCase()}`) || /@(?:[^>\s,]+\.)?edu(?:[>\s,]|$)/i.test(from)) return "professor";
   if (/recruit|interview|intern|hiring/.test(lower)) return "recruiter";
   if (/calendar|resched|time change|deadline|meeting/.test(lower)) return "calendar_change";
   if (/send|transcript|document|resume/.test(lower)) return "send";
@@ -310,10 +391,103 @@ function stableTodoId(message, type) {
 }
 
 function getConfiguredUserEmails() {
-  return (process.env.SCHEDULED_INBOX_USER_EMAILS || "")
+  return getConfiguredAccounts().flatMap((account) => account.userEmails);
+}
+
+function parseConfiguredUserEmails(value = "") {
+  return value
     .split(",")
     .map((email) => email.trim().toLowerCase())
     .filter(Boolean);
+}
+
+function getConfiguredAccounts(env = process.env) {
+  const numbered = [];
+  for (let index = 1; index <= MAX_GMAIL_ACCOUNTS; index += 1) {
+    const prefix = `GMAIL_ACCOUNT_${index}`;
+    const email = env[`${prefix}_EMAIL`]?.trim();
+    const refreshToken = env[`${prefix}_REFRESH_TOKEN`]?.trim();
+    const clientId = env[`${prefix}_CLIENT_ID`] || env.GOOGLE_CLIENT_ID;
+    const clientSecret = env[`${prefix}_CLIENT_SECRET`] || env.GOOGLE_CLIENT_SECRET;
+    if (!email && !refreshToken) continue;
+    if (!email || !refreshToken || !clientId || !clientSecret) continue;
+    const label = env[`${prefix}_LABEL`]?.trim() || labelFromEmail(email);
+    numbered.push({
+      id: slugify(`${label}-${email}`),
+      label,
+      email: email.toLowerCase(),
+      userEmails: parseConfiguredUserEmails(email),
+      clientId,
+      clientSecret,
+      refreshToken,
+      icon: env[`${prefix}_ICON`]?.trim() || label.slice(0, 1).toUpperCase(),
+      color: env[`${prefix}_COLOR`]?.trim() || defaultAccountColor(numbered.length),
+    });
+  }
+  if (numbered.length) return numbered;
+
+  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.GOOGLE_REFRESH_TOKEN) return [];
+  const userEmails = parseConfiguredUserEmails(env.SCHEDULED_INBOX_USER_EMAILS);
+  const email = userEmails[0] || "";
+  const label = env.GMAIL_ACCOUNT_LABEL?.trim() || labelFromEmail(email) || "Gmail";
+  return [{
+    id: slugify(`${label}-${email || "default"}`),
+    label,
+    email,
+    userEmails,
+    clientId: env.GOOGLE_CLIENT_ID,
+    clientSecret: env.GOOGLE_CLIENT_SECRET,
+    refreshToken: env.GOOGLE_REFRESH_TOKEN,
+    icon: env.GMAIL_ACCOUNT_ICON?.trim() || label.slice(0, 1).toUpperCase(),
+    color: env.GMAIL_ACCOUNT_COLOR?.trim() || defaultAccountColor(0),
+  }];
+}
+
+function publicAccount(account) {
+  return {
+    id: account.id,
+    label: account.label,
+    email: account.email,
+    icon: account.icon,
+    color: account.color,
+  };
+}
+
+function labelFromEmail(email = "") {
+  if (!email) return "";
+  if (email.endsWith("@umass.edu")) return "UMass";
+  if (email.includes("@gmail.com")) return "Gmail";
+  return email.split("@")[0] || "Gmail";
+}
+
+function slugify(value) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "gmail";
+}
+
+function defaultAccountColor(index) {
+  return ["#e8b7d0", "#5f6fcb", "#34a853", "#fbbc04"][index % 4];
+}
+
+function loadLocalEnvForDev() {
+  if (process.env.VERCEL_ENV) return;
+  const path = resolve(process.cwd(), ".env.local");
+  if (!existsSync(path)) return;
+  for (const rawLine of readFileSync(path, "utf8").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const equalsIndex = line.indexOf("=");
+    if (equalsIndex < 0) continue;
+    const key = line.slice(0, equalsIndex).trim();
+    let value = line.slice(equalsIndex + 1).trim();
+    if (!/^[A-Z0-9_]+$/.test(key) || process.env[key]) continue;
+    if (
+      (value.startsWith("\"") && value.endsWith("\"")) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    process.env[key] = value;
+  }
 }
 
 function recipientCount(value) {
@@ -337,4 +511,4 @@ function extractEmail(value) {
   return value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
 }
 
-export { GMAIL_READONLY_SCOPE };
+export { GMAIL_READONLY_SCOPE, buildDebugDiagnostics, getConfiguredAccounts, normalizeMessages };
