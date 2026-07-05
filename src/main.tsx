@@ -261,7 +261,6 @@ const MAX_SCALE = 5;
 const HIT_TOLERANCE = 12;
 const CLICK_MAX_DURATION_MS = 250;
 const DRAG_THRESHOLD_PX = 5;
-const TEXT_BOX_PADDING = 16;
 const TEXT_BOX_MIN_WIDTH = 96;
 const TEXT_BOX_MIN_HEIGHT = 56;
 const DEFAULT_TEXT_LINE_HEIGHT = 1.16;
@@ -2511,16 +2510,17 @@ function renderText(ctx: CanvasRenderingContext2D, object: TextObject, settings:
   ctx.textBaseline = "top";
   ctx.textAlign = "left";
 
-  const lines = wrapText(ctx, object.text, object.width - TEXT_BOX_PADDING * 2, object.fontSize);
+  const padding = textBoxPadding(object.fontSize);
+  const lines = wrapText(ctx, object.text, object.width - padding.left - padding.right, object.fontSize);
   const lineHeightFactor = object.lineHeight ?? DEFAULT_TEXT_LINE_HEIGHT;
   const lineHeight = object.fontSize * lineHeightFactor;
   const visualTopOffset = getTextVisualTopOffset(ctx, object.fontSize, lineHeightFactor);
   lines.forEach((line, index) => {
     const y = visualTopOffset + index * lineHeight;
-    renderHighlightedTextLine(ctx, line, TEXT_BOX_PADDING, y + TEXT_BOX_PADDING, ink);
+    renderHighlightedTextLine(ctx, line, padding.left, y + padding.top, ink);
     if (settings.chalkTexture) {
       ctx.globalAlpha = object.opacity * 0.13;
-      renderHighlightedTextLine(ctx, line, TEXT_BOX_PADDING + seededNoise(object.id, index) * 1.4, TEXT_BOX_PADDING + y + seededNoise(object.id, index + 99) * 1.2, ink);
+      renderHighlightedTextLine(ctx, line, padding.left + seededNoise(object.id, index) * 1.4, padding.top + y + seededNoise(object.id, index + 99) * 1.2, ink);
       ctx.globalAlpha = object.opacity;
     }
   });
@@ -3296,6 +3296,7 @@ function makeEditorStyle(object: TextObject, viewport: Viewport): React.CSSPrope
   const screen = worldToScreen({ x: object.x, y: object.y }, viewport);
   const scaledFontSize = object.fontSize * viewport.scale;
   const scaledLineHeight = object.fontSize * (object.lineHeight ?? DEFAULT_TEXT_LINE_HEIGHT) * viewport.scale;
+  const padding = textBoxPadding(object.fontSize);
   return {
     left: `${screen.x}px`,
     top: `${screen.y}px`,
@@ -3303,7 +3304,7 @@ function makeEditorStyle(object: TextObject, viewport: Viewport): React.CSSPrope
     height: `${Math.max(object.height, textBoxConstraints(object).minHeight) * viewport.scale}px`,
     fontSize: `${scaledFontSize}px`,
     lineHeight: `${scaledLineHeight}px`,
-    padding: `${TEXT_BOX_PADDING * viewport.scale}px`,
+    padding: `${padding.top * viewport.scale}px ${padding.right * viewport.scale}px ${padding.bottom * viewport.scale}px ${padding.left * viewport.scale}px`,
     fontFamily: TEXT_FONT_FAMILY,
     transform: `rotate(${object.rotation ?? 0}rad)`,
     transformOrigin: "0 0",
@@ -3315,11 +3316,17 @@ function measureTextBox(object: TextObject) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return { width: object.width, height: object.height, minWidth: TEXT_BOX_MIN_WIDTH, minHeight: TEXT_BOX_MIN_HEIGHT };
   ctx.font = `${object.fontSize}px ${TEXT_FONT_FAMILY}`;
-  const lines = wrapText(ctx, object.text || " ", object.width - TEXT_BOX_PADDING * 2, object.fontSize);
-  const height = Math.max(lines.length, 1) * object.fontSize * (object.lineHeight ?? DEFAULT_TEXT_LINE_HEIGHT);
+  const padding = textBoxPadding(object.fontSize);
+  const contentWidth = object.width - padding.left - padding.right;
+  const lines = wrapText(ctx, object.text || " ", contentWidth, object.fontSize);
+  const lineHeightFactor = object.lineHeight ?? DEFAULT_TEXT_LINE_HEIGHT;
+  const lineHeight = object.fontSize * lineHeightFactor;
+  const visualTopOffset = getTextVisualTopOffset(ctx, object.fontSize, lineHeightFactor);
+  const lineInkHeight = measuredLineInkHeight(ctx, object.fontSize);
+  const height = visualTopOffset + Math.max(lines.length - 1, 0) * lineHeight + lineInkHeight;
   const longestTokenWidth = longestTextTokenWidth(ctx, object.text || " ");
-  const minWidth = Math.max(TEXT_BOX_MIN_WIDTH, longestTokenWidth + TEXT_BOX_PADDING * 2);
-  const minHeight = Math.max(TEXT_BOX_MIN_HEIGHT, height + TEXT_BOX_PADDING * 2);
+  const minWidth = Math.max(TEXT_BOX_MIN_WIDTH, longestTokenWidth + padding.left + padding.right);
+  const minHeight = Math.max(TEXT_BOX_MIN_HEIGHT, height + padding.top + padding.bottom);
   return { width: object.width, height, minWidth, minHeight };
 }
 
@@ -3332,6 +3339,21 @@ function longestTextTokenWidth(ctx: CanvasRenderingContext2D, text: string) {
     .split(/\s+/)
     .filter(Boolean)
     .reduce((max, token) => Math.max(max, ctx.measureText(token).width), 0);
+}
+
+function textBoxPadding(fontSize: number) {
+  return {
+    top: Math.max(18, fontSize * 0.24),
+    right: Math.max(20, fontSize * 0.26),
+    bottom: Math.max(26, fontSize * 0.38),
+    left: Math.max(20, fontSize * 0.26),
+  };
+}
+
+function measuredLineInkHeight(ctx: CanvasRenderingContext2D, fontSize: number) {
+  const metrics = ctx.measureText("Mgjpqy");
+  const measured = (metrics.actualBoundingBoxAscent || 0) + (metrics.actualBoundingBoxDescent || 0);
+  return Math.max(fontSize * 1.05, measured);
 }
 
 function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, fontSize: number) {
