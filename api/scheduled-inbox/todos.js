@@ -74,7 +74,7 @@ class GoogleOAuthError extends GreyboardInboxError {
 async function fetchTodosForAccount(account) {
   const accessToken = await getAccessToken(account);
   const [incomingMessages, sentMessages] = await Promise.all([
-    fetchCandidateMessages(accessToken, incomingQuery()),
+    fetchThreadedCandidateMessages(accessToken, incomingQuery()),
     fetchSentFollowUpMessages(accessToken, account.userEmails, true),
   ]);
   return { account, todos: normalizeMessages([...incomingMessages, ...sentMessages], account.userEmails, publicAccount(account)) };
@@ -168,6 +168,14 @@ async function fetchCandidateMessages(accessToken, query) {
   return Promise.all(messages.map((message) =>
     gmailFetch(`${GMAIL_API_BASE}/messages/${message.id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Subject&metadataHeaders=Date`, accessToken),
   ));
+}
+
+async function fetchThreadedCandidateMessages(accessToken, query) {
+  const messages = await fetchCandidateMessages(accessToken, query);
+  return Promise.all(messages.map(async (message) => {
+    const thread = await gmailFetch(`${GMAIL_API_BASE}/threads/${message.threadId}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Subject&metadataHeaders=Date`, accessToken);
+    return { ...message, threadMessages: thread.messages ?? [] };
+  }));
 }
 
 async function fetchSentFollowUpMessages(accessToken, userEmails, includeThreadMessages = false) {

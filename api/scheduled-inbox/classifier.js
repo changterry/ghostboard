@@ -29,9 +29,12 @@ const EXPLICIT_ACTION_PATTERNS = [
   /\bresponse required\b/i,
   /\brequired\b/i,
   /\bmandatory\b/i,
+  /\bform\b/i,
   /\bdeadline\b/i,
   /\bdue by\b/i,
   /\bneeded by\b/i,
+  /\brespond by\b/i,
+  /\bsubmit by\b/i,
   /\bby (tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
 ];
 
@@ -78,7 +81,15 @@ const CLOSED_PATTERNS = [
   /\bthanks\b/i,
   /\bthank you\b/i,
   /\bsounds good\b/i,
+  /\bgot it\b/i,
+  /\bwill do\b/i,
+  /\bsent\b/i,
+  /\bsubmitted\b/i,
+  /\bdone\b/i,
+  /\bcompleted\b/i,
   /\bsee you then\b/i,
+  /\bappreciate it\b/i,
+  /\bno worries\b/i,
   /\bconfirmed\b/i,
   /\ball set\b/i,
   /\bno action needed\b/i,
@@ -156,6 +167,9 @@ export function classifyMessage({ message, userEmails = [], threadMessages = [],
     return classifySentFollowUp({ message, userEmails, threadMessages, now });
   }
 
+  const handledThread = classifyHandledIncomingThread({ message, userEmails, threadMessages });
+  if (handledThread) return handledThread;
+
   if (CLOSED_PATTERNS.some((pattern) => pattern.test(text)) && !explicitAction && !explicitRsvp && !replySignal) {
     bucket = INBOX_BUCKETS.THREAD_CLOSED;
     confidence = 0.9;
@@ -226,29 +240,102 @@ export function classifyMessage({ message, userEmails = [], threadMessages = [],
 }
 
 function classifySentFollowUp({ message, userEmails, threadMessages, now }) {
-  const headers = headerMap(message);
-  const text = `${headers.to ?? ""} ${headers.cc ?? ""} ${headers.subject ?? ""} ${message.snippet ?? ""}`;
-  const ageDays = (now.getTime() - messageDate(message).getTime()) / 86400000;
-  const recipients = recipientCount(`${headers.to ?? ""},${headers.cc ?? ""}`);
-  const laterNonUserReply = hasNonUserReplyAfterMessage(threadMessages, message, userEmails);
+  const messages = threadMessages.length ? threadMessages : [message];
+  const latestUserMessage = latestMessageMatching(messages, (candidate) => isFromUser(headerMap(candidate).from ?? "", userEmails));
+  const latestUserAsk = latestMessageMatching(messages, (candidate) => {
+    const candidateHeaders = headerMap(candidate);
+    const candidateText = `${candidateHeaders.to ?? ""} ${candidateHeaders.cc ?? ""} ${candidateHeaders.subject ?? ""} ${candidate.snippet ?? ""}`;
+    return isFromUser(candidateHeaders.from ?? "", userEmails) && hasOpenLoopSignal(candidateText) && !hasClosureSignal(candidateText);
+  });
+  const sentMessage = latestUserAsk ?? message;
+  const sentHeaders = headerMap(sentMessage);
+  const sentText = `${sentHeaders.to ?? ""} ${sentHeaders.cc ?? ""} ${sentHeaders.subject ?? ""} ${sentMessage.snippet ?? ""}`;
+  const ageDays = (now.getTime() - messageDate(sentMessage).getTime()) / 86400000;
+  const recipients = recipientCount(`${sentHeaders.to ?? ""},${sentHeaders.cc ?? ""}`);
+  const laterNonUserReply = hasNonUserReplyAfterMessage(threadMessages, sentMessage, userEmails);
   const reasons = ["sent_message"];
 
+  if (latestUserMessage && messageDate(latestUserMessage) > messageDate(sentMessage) && hasClosureSignal(messageText(latestUserMessage))) {
+    return { bucket: INBOX_BUCKETS.THREAD_CLOSED, confidence: 0.9, reasons: [...reasons, "later_user_closure"], isTodo: false };
+  }
+  if (latestUserAsk && latestUserAsk.id !== message.id) {
+    return { bucket: INBOX_BUCKETS.THREAD_CLOSED, confidence: 0.88, reasons: [...reasons, "newer_user_ask"], isTodo: false };
+  }
   if (laterNonUserReply) {
     return { bucket: INBOX_BUCKETS.THREAD_CLOSED, confidence: 0.9, reasons: [...reasons, "later_reply"], isTodo: false };
   }
-  if (ageDays < 7) {
+  if (ageDays < 5) {
     return { bucket: INBOX_BUCKETS.LOW_CONFIDENCE_IGNORE, confidence: 0.88, reasons: [...reasons, "too_recent"], isTodo: false };
   }
-  if (recipients > 5 || CLOSED_PATTERNS.some((pattern) => pattern.test(text)) || PROMOTION_PATTERNS.some((pattern) => pattern.test(text))) {
+  if (recipients > 5 || hasClosureSignal(sentText) || PROMOTION_PATTERNS.some((pattern) => pattern.test(sentText))) {
     return { bucket: INBOX_BUCKETS.THREAD_CLOSED, confidence: 0.82, reasons: [...reasons, "closed_or_bulk_sent"], isTodo: false };
   }
-  if (OPEN_LOOP_PATTERNS.some((pattern) => pattern.test(text))) {
+  if (OPEN_LOOP_PATTERNS.some((pattern) => pattern.test(sentText))) {
     return { bucket: INBOX_BUCKETS.FOLLOW_UP_REQUIRED, confidence: 0.82, reasons: [...reasons, "open_loop"], isTodo: true };
   }
-  if (WEAK_OPEN_LOOP_PATTERNS.some((pattern) => pattern.test(text))) {
+  if (WEAK_OPEN_LOOP_PATTERNS.some((pattern) => pattern.test(sentText))) {
     return { bucket: INBOX_BUCKETS.WAITING_ON_REPLY, confidence: 0.74, reasons: [...reasons, "weak_open_loop"], isTodo: true };
   }
   return { bucket: INBOX_BUCKETS.LOW_CONFIDENCE_IGNORE, confidence: 0.56, reasons: [...reasons, "no_open_loop"], isTodo: false };
+}
+
+function classifyHandledIncomingThread({ message, userEmails, threadMessages }) {
+  if (!threadMessages.length) return null;
+  const ordered = [...threadMessages].sort((a, b) => messageDate(a).getTime() - messageDate(b).getTime());
+  const latestUserMessage = [...ordered].reverse().find((candidate) => isFromUser(headerMap(candidate).from ?? "", userEmails));
+  if (!latestUserMessage) return null;
+
+  const latestUserDate = messageDate(latestUserMessage);
+  const latestUserText = messageText(latestUserMessage);
+  if (hasClosureSignal(latestUserText) && isLatestThreadMessage(latestUserMessage, ordered)) {
+    return { bucket: INBOX_BUCKETS.THREAD_CLOSED, confidence: 0.94, reasons: ["latest_user_closure"], isTodo: false };
+  }
+
+  const messageIsBeforeUserReply = messageDate(message) <= latestUserDate;
+  const newerAskAfterUserReply = ordered.some((candidate) => {
+    if (messageDate(candidate) <= latestUserDate) return false;
+    if (isFromUser(headerMap(candidate).from ?? "", userEmails)) return false;
+    return hasIncomingAskSignal(messageText(candidate));
+  });
+
+  if (messageIsBeforeUserReply && !newerAskAfterUserReply) {
+    return { bucket: INBOX_BUCKETS.THREAD_CLOSED, confidence: 0.9, reasons: ["handled_by_later_user_reply"], isTodo: false };
+  }
+  if (messageIsBeforeUserReply && newerAskAfterUserReply) {
+    return { bucket: INBOX_BUCKETS.THREAD_CLOSED, confidence: 0.86, reasons: ["older_ask_superseded"], isTodo: false };
+  }
+  return null;
+}
+
+function hasIncomingAskSignal(text) {
+  return EXPLICIT_ACTION_PATTERNS.some((pattern) => pattern.test(text)) ||
+    RSVP_PATTERNS.some((pattern) => pattern.test(text)) ||
+    REPLY_PATTERNS.some((pattern) => pattern.test(text)) ||
+    DIRECT_ACTION_VERBS.test(text);
+}
+
+function hasOpenLoopSignal(text) {
+  return OPEN_LOOP_PATTERNS.some((pattern) => pattern.test(text)) ||
+    WEAK_OPEN_LOOP_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function hasClosureSignal(text) {
+  return CLOSED_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function latestMessageMatching(messages, predicate) {
+  return [...messages]
+    .filter(predicate)
+    .sort((a, b) => messageDate(b).getTime() - messageDate(a).getTime())[0];
+}
+
+function isLatestThreadMessage(message, orderedMessages) {
+  return orderedMessages[orderedMessages.length - 1]?.id === message.id;
+}
+
+function messageText(message) {
+  const headers = headerMap(message);
+  return `${headers.from ?? ""} ${headers.to ?? ""} ${headers.cc ?? ""} ${headers.subject ?? ""} ${message.snippet ?? ""}`;
 }
 
 function hasNonUserReplyAfterMessage(threadMessages, sentMessage, userEmails) {

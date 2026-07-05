@@ -248,9 +248,15 @@ type InboxPreviewState = {
   errorByTodoId: Record<string, string>;
 };
 
+type InboxPanelState = {
+  isOpen: boolean;
+  width: number;
+};
+
 const STORAGE_KEY = "ghostboard.state.v1";
 const GREYBOARD_LIBRARY_STORAGE_KEY = "greyboard.library.v1";
 const INBOX_STATUS_STORAGE_KEY = "greyboard.inboxTodos.status.v1";
+const INBOX_PANEL_STORAGE_KEY = "greyboard.inboxPanel.v1";
 const LOCAL_CLIPBOARD_KEY = "greyboard.clipboard.v1";
 const CLIPBOARD_PREFIX = "greyboard/objects:";
 const CLIPBOARD_HTML_PREFIX = "greyboard-data:";
@@ -267,6 +273,10 @@ const DEFAULT_TEXT_LINE_HEIGHT = 1.16;
 const TEXT_FONT_FAMILY = "\"Segoe Print\", \"Comic Sans MS\", \"Bradley Hand ITC\", cursive";
 const SMART_FIND_EMPTY: SmartFindState = { isOpen: false, query: "", results: [], activeIndex: 0 };
 const SCHEDULE_HIGHLIGHT = "#d8c900";
+const INBOX_PANEL_DEFAULT_WIDTH = 400;
+const INBOX_PANEL_MIN_WIDTH = 300;
+const INBOX_PANEL_MAX_WIDTH = 560;
+const INBOX_PANEL_DESKTOP_MIN_WIDTH = 760;
 const USE_MOCK_INBOX = ((import.meta as unknown as { env?: Record<string, string> }).env?.VITE_USE_MOCK_INBOX) === "true";
 const THEME = {
   dark: {
@@ -344,6 +354,7 @@ function Ghostboard() {
   const toastTimerRef = useRef<number | null>(null);
   const touchPointersRef = useRef<Map<number, Point>>(new Map());
   const touchGestureRef = useRef<TouchGesture | null>(null);
+  const hasStoredInboxPanelRef = useRef(hasStoredInboxPanel());
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
@@ -355,7 +366,7 @@ function Ghostboard() {
   const [inbox, setInbox] = useState<InboxState>({ todos: [], accounts: [], loading: true, error: "", errorCode: "" });
   const [inboxStatus, setInboxStatus] = useState<InboxStatusState>(loadInboxStatus());
   const [expandedInboxId, setExpandedInboxId] = useState<string | null>(null);
-  const [inboxOpen, setInboxOpen] = useState(false);
+  const [inboxPanel, setInboxPanel] = useState<InboxPanelState>(loadInboxPanel());
   const [accountLegendOpen, setAccountLegendOpen] = useState(false);
   const [setupNotesOpen, setSetupNotesOpen] = useState(false);
   const [openInboxRailId, setOpenInboxRailId] = useState<string | null>(null);
@@ -381,9 +392,10 @@ function Ghostboard() {
 
     const resize = () => {
       const ratio = window.devicePixelRatio || 1;
-      canvas.width = Math.floor(window.innerWidth * ratio);
+      const canvasWidth = usableCanvasWidth(inboxPanel);
+      canvas.width = Math.floor(canvasWidth * ratio);
       canvas.height = Math.floor(window.innerHeight * ratio);
-      canvas.style.width = `${window.innerWidth}px`;
+      canvas.style.width = `${canvasWidth}px`;
       canvas.style.height = `${window.innerHeight}px`;
       requestRender();
     };
@@ -395,7 +407,7 @@ function Ghostboard() {
       window.removeEventListener("resize", resize);
       canvas.removeEventListener("wheel", onWheel);
     };
-  }, []);
+  }, [inboxPanel.isOpen, inboxPanel.width]);
 
   useEffect(() => {
     requestRender();
@@ -437,9 +449,9 @@ function Ghostboard() {
           setSwipingInbox(null);
           return;
         }
-        if (inboxOpen) {
+        if (inboxPanel.isOpen) {
           event.preventDefault();
-          setInboxOpen(false);
+          updateInboxPanel({ isOpen: false });
           return;
         }
         if (libraryOpen) {
@@ -504,7 +516,7 @@ function Ghostboard() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [clearConfirmOpen, contextMenu, editor, inboxOpen, libraryOpen, openInboxRailId, settingsOpen, sidebarOpen, smartFind]);
+  }, [clearConfirmOpen, contextMenu, editor, inboxPanel.isOpen, libraryOpen, openInboxRailId, settingsOpen, sidebarOpen, smartFind]);
 
   useEffect(() => {
     if (!smartFind.isOpen) return;
@@ -576,14 +588,16 @@ function Ghostboard() {
     setInbox((current) => ({ ...current, loading: true, error: "", errorCode: "" }));
     try {
       const result = USE_MOCK_INBOX ? mockInboxResult() : await fetchInboxTodosFromApi();
+      const todos = applyInboxStatus(result.todos, inboxStatus);
       setInbox({
-        todos: applyInboxStatus(result.todos, inboxStatus),
+        todos,
         accounts: result.accounts,
         loading: false,
         error: "",
         errorCode: "",
         lastUpdated: new Date().toISOString(),
       });
+      applyDefaultInboxPanelState(todos);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not load inbox todos.";
       setInbox({
@@ -610,7 +624,49 @@ function Ghostboard() {
     setInbox((current) => ({ ...current, todos: applyInboxStatus(current.todos, next) }));
     setOpenInboxRailId(null);
     setSwipingInbox(null);
-    showToast(status === "done" ? "Marked done" : "Dismissed");
+    showToast(status === "done" ? "Marked done" : "Hidden");
+  }
+
+  function updateInboxPanel(patch: Partial<InboxPanelState>) {
+    setInboxPanel((current) => {
+      const next = {
+        ...current,
+        ...patch,
+        width: clampInboxPanelWidth(patch.width ?? current.width),
+      };
+      localStorage.setItem(INBOX_PANEL_STORAGE_KEY, JSON.stringify(next));
+      hasStoredInboxPanelRef.current = true;
+      return next;
+    });
+  }
+
+  function applyDefaultInboxPanelState(todos: InboxTodo[]) {
+    if (hasStoredInboxPanelRef.current || !isDesktopInboxPanel()) return;
+    const next = { width: INBOX_PANEL_DEFAULT_WIDTH, isOpen: visibleInboxTodos(todos).length > 0 };
+    setInboxPanel(next);
+    localStorage.setItem(INBOX_PANEL_STORAGE_KEY, JSON.stringify(next));
+    hasStoredInboxPanelRef.current = true;
+  }
+
+  function startInboxPanelResize(event: React.PointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = inboxPanel.width;
+    document.body.classList.add("is-resizing-inbox");
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      const nextWidth = clampInboxPanelWidth(startWidth + startX - moveEvent.clientX);
+      setInboxPanel((current) => ({ ...current, width: nextWidth }));
+    };
+    const onPointerUp = (upEvent: PointerEvent) => {
+      const nextWidth = clampInboxPanelWidth(startWidth + startX - upEvent.clientX);
+      document.body.classList.remove("is-resizing-inbox");
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      updateInboxPanel({ width: nextWidth });
+      requestRender();
+    };
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
   }
 
   function addInboxTodoToBoard(todo: InboxTodo) {
@@ -629,7 +685,7 @@ function Ghostboard() {
 
     const before = cloneObjects(boardRef.current.objects);
     const viewport = boardRef.current.viewport;
-    const center = screenToWorld({ x: window.innerWidth / 2, y: window.innerHeight / 2 }, viewport);
+    const center = screenToWorld({ x: usableCanvasWidth(inboxPanel) / 2, y: window.innerHeight / 2 }, viewport);
     const inboxCount = boardRef.current.objects.filter((object) => object.metadata?.source === "scheduled_inbox").length;
     const offset = (inboxCount % 5) * 46;
     const text: TextObject = {
@@ -720,7 +776,7 @@ function Ghostboard() {
   function inboxActionsForTodo(todo: InboxTodo) {
     return [
       { id: "done", label: "Done", icon: "✓", run: () => setTodoStatus(todo.id, "done") },
-      { id: "dismiss", label: "Dismiss", icon: "×", run: () => setTodoStatus(todo.id, "dismissed") },
+      { id: "dismiss", label: "Hide", icon: "×", run: () => setTodoStatus(todo.id, "dismissed") },
       { id: "board", label: "Add to board", icon: "+", run: () => addInboxTodoToBoard(todo) },
       ...(todo.gmailUrl ? [{ id: "gmail", label: "Open Gmail", icon: "↗", run: () => window.open(todo.gmailUrl, "_blank", "noopener,noreferrer") }] : []),
       ...(todo.suggestedDraft ? [{ id: "copy", label: "Copy draft", icon: "⧉", run: () => void copyInboxDraft(todo) }] : []),
@@ -2012,7 +2068,7 @@ function Ghostboard() {
         <button type="button" aria-label="Redo" onClick={redo}>↷</button>
       </div>
 
-      <aside className={`sidebar ${sidebarOpen ? "is-open" : ""} ${inboxOpen ? "has-inbox-open" : ""}`} aria-hidden={!sidebarOpen && !inboxOpen}>
+      <aside className={`sidebar ${sidebarOpen ? "is-open" : ""}`} aria-hidden={!sidebarOpen}>
         <div className="brand">
           <strong>Greyboard</strong>
           {titleEditing ? (
@@ -2096,166 +2152,6 @@ function Ghostboard() {
             </div>
           </div>
         )}
-
-        <button
-          type="button"
-          className="inbox-open-button"
-          onClick={() => setInboxOpen((open) => !open)}
-          aria-expanded={inboxOpen}
-          aria-controls="inbox-panel"
-        >
-          <span>Inbox Feed</span>
-          <strong>{visibleTodos.length}</strong>
-        </button>
-
-        <section id="inbox-panel" className={`inbox-feed ${inboxOpen ? "is-open" : ""}`} aria-label="Inbox Feed" aria-hidden={!inboxOpen}>
-          <div className="inbox-feed-header">
-            <strong>Inbox Feed</strong>
-            <div className="inbox-feed-controls">
-              {inbox.accounts.length > 0 && (
-                <button type="button" className="inbox-account-pill" onClick={() => setAccountLegendOpen((open) => !open)} aria-expanded={accountLegendOpen}>
-                  {inbox.accounts.length} account{inbox.accounts.length === 1 ? "" : "s"}
-                </button>
-              )}
-              <button type="button" onClick={() => void fetchInboxTodos()} disabled={inbox.loading}>
-                {inbox.loading ? "Loading" : "Refresh"}
-              </button>
-            </div>
-          </div>
-          {accountLegendOpen && inbox.accounts.length > 0 && (
-            <div className="inbox-account-legend">
-              {inbox.accounts.map((account) => (
-                <div key={account.id} className="inbox-account-row">
-                  <AccountIcon account={account} size="large" />
-                  <span>{account.email || account.label}</span>
-                </div>
-              ))}
-            </div>
-          )}
-          {inbox.loading && (
-            <div className="inbox-state">
-              <strong>Checking inbox...</strong>
-              <span>Looking for personal emails that need time or a reply.</span>
-            </div>
-          )}
-          {!inbox.loading && inbox.errorCode === "config_missing" && (
-            <div className="inbox-state">
-              <strong>Gmail not connected yet.</strong>
-              <span>Add Google OAuth env vars in Vercel to enable real inbox todos.</span>
-              <span>Greyboard still works normally.</span>
-              <button type="button" onClick={() => setSetupNotesOpen((open) => !open)}>Setup notes</button>
-              {setupNotesOpen && (
-                <div className="setup-notes">
-                  <span>Required env vars:</span>
-                  <code>GOOGLE_CLIENT_ID</code>
-                  <code>GOOGLE_CLIENT_SECRET</code>
-                  <code>GMAIL_ACCOUNT_1_EMAIL</code>
-                  <code>GMAIL_ACCOUNT_1_REFRESH_TOKEN</code>
-                  <code>GMAIL_ACCOUNT_2_EMAIL</code>
-                  <code>GMAIL_ACCOUNT_2_REFRESH_TOKEN</code>
-                  <small>No passwords. No frontend secrets.</small>
-                </div>
-              )}
-            </div>
-          )}
-          {!inbox.loading && inbox.errorCode === "error" && (
-            <div className="inbox-state">
-              <strong>Could not load inbox todos.</strong>
-              <span>Greyboard is still available.</span>
-              <button type="button" onClick={() => void fetchInboxTodos()}>Retry</button>
-            </div>
-          )}
-          {!inbox.loading && !inbox.error && visibleTodos.length === 0 && (
-            <div className="inbox-state">
-              <strong>No email todos right now.</strong>
-              <span>Nothing personal-looking needs attention.</span>
-            </div>
-          )}
-          {!inbox.loading && !inbox.error && visibleTodos.map((todo) => {
-            const actions = inboxActionsForTodo(todo);
-            const railWidth = Math.min(220, actions.length * 44);
-            const activeOffset = swipingInbox?.id === todo.id ? swipingInbox.offset : openInboxRailId === todo.id ? railWidth : 0;
-            const preview = inboxPreview.openTodoId === todo.id ? inboxPreview.byTodoId[todo.id] : null;
-            const previewError = inboxPreview.errorByTodoId[todo.id];
-            return (
-              <div
-                key={todo.id}
-                className={`inbox-item urgency-${todo.urgency} ${openInboxRailId === todo.id ? "is-rail-open" : ""}`}
-                style={{ "--inbox-swipe-offset": `${activeOffset}px`, "--inbox-rail-width": `${railWidth}px` } as React.CSSProperties}
-                onWheel={(event) => handleInboxItemWheel(event, todo)}
-              >
-                <div className="inbox-item-swipe">
-                  <div className="inbox-item-card">
-                    <button
-                      type="button"
-                      className="inbox-item-main"
-                      onClick={() => setExpandedInboxId(expandedInboxId === todo.id ? null : todo.id)}
-                      aria-expanded={expandedInboxId === todo.id}
-                    >
-                      <b>{urgencyLabel(todo.urgency)}</b>
-                      <span>{todo.title}</span>
-                      {todo.dueDate && <em>{todo.dueDate}</em>}
-                    </button>
-                    <small className="inbox-item-source">
-                      <AccountIcon account={accountForTodo(todo, inbox.accounts)} />
-                      <span>{todo.subject || todo.contactName || todo.accountLabel || "Gmail"}</span>
-                      <button type="button" className="inbox-row-actions-toggle" aria-label="Show inbox todo actions" onClick={() => setOpenInboxRailId(openInboxRailId === todo.id ? null : todo.id)}>•••</button>
-                    </small>
-                    {expandedInboxId === todo.id && (
-                      <div className="inbox-item-expanded">
-                        <span><strong>Why:</strong> {todo.reason}</span>
-                        <span><strong>Action:</strong> {todo.suggestedAction}</span>
-                        {todo.suggestedDraft && <span><strong>Draft:</strong> {todo.suggestedDraft}</span>}
-                        <div className="inbox-item-actions">
-                          <button type="button" onClick={() => addInboxTodoToBoard(todo)}>Add to board</button>
-                          <button type="button" onClick={() => void fetchInboxEmailPreview(todo)}>
-                            {inboxPreview.loadingTodoId === todo.id ? "Loading" : preview ? "Hide email" : "Preview email"}
-                          </button>
-                          {todo.suggestedDraft && <button type="button" onClick={() => void copyInboxDraft(todo)}>Copy draft</button>}
-                          {todo.gmailUrl && <button type="button" onClick={() => window.open(todo.gmailUrl, "_blank", "noopener,noreferrer")}>Open Gmail</button>}
-                          <button type="button" onClick={() => setTodoStatus(todo.id, "done")}>Done</button>
-                          <button type="button" onClick={() => setTodoStatus(todo.id, "dismissed")}>Dismiss</button>
-                        </div>
-                        {previewError && <span className="inbox-email-preview-error">{previewError}</span>}
-                        {preview && (
-                          <div className="inbox-email-preview">
-                            <div className="inbox-email-preview-header">
-                              <strong>{preview.subject || todo.subject || "Email"}</strong>
-                              {preview.date && <span>{formatBoardTime(preview.date)}</span>}
-                            </div>
-                            {preview.from && <span className="inbox-email-preview-meta">From: {preview.from}</span>}
-                            <pre className="inbox-email-preview-body">{preview.bodyText || preview.snippet || "No preview text."}</pre>
-                            {preview.bodyTruncated && <span className="inbox-email-preview-meta">Preview truncated.</span>}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  <div className="inbox-action-rail" aria-label={`${todo.title} actions`}>
-                    {actions.map((action) => (
-                      <button
-                        key={action.id}
-                        type="button"
-                        className={`inbox-action-button inbox-action-${action.id}`}
-                        aria-label={action.label}
-                        title={action.label}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          action.run();
-                          setOpenInboxRailId(null);
-                          setSwipingInbox(null);
-                        }}
-                      >
-                        <span aria-hidden="true">{action.icon}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-          {inbox.lastUpdated && <span className="inbox-updated">Updated {formatBoardTime(inbox.lastUpdated)}</span>}
-        </section>
 
         {settingsOpen && (
           <div className="settings-panel">
@@ -2458,6 +2354,155 @@ function Ghostboard() {
           </div>
         </div>
       </aside>
+
+      {!inboxPanel.isOpen && (
+        <button
+          type="button"
+          className="inbox-floating-button"
+          onClick={() => updateInboxPanel({ isOpen: true })}
+          aria-controls="inbox-panel"
+          aria-expanded={false}
+        >
+          <span>Inbox</span>
+          <strong>{visibleTodos.length}</strong>
+        </button>
+      )}
+
+      {inboxPanel.isOpen && (
+        <aside
+          id="inbox-panel"
+          className="inbox-feed is-open"
+          aria-label="Inbox Feed"
+          style={{ "--inbox-panel-width": `${inboxPanel.width}px` } as React.CSSProperties}
+        >
+          <button
+            type="button"
+            className="inbox-resize-handle"
+            aria-label="Resize Inbox Feed"
+            onPointerDown={startInboxPanelResize}
+          />
+          <div className="inbox-feed-header">
+            <div>
+              <strong>Inbox Feed</strong>
+              <span>{visibleTodos.length} pending</span>
+            </div>
+            <div className="inbox-feed-controls">
+              <button type="button" onClick={() => void fetchInboxTodos()} disabled={inbox.loading}>
+                {inbox.loading ? "Loading" : "Refresh"}
+              </button>
+              <button type="button" onClick={() => updateInboxPanel({ isOpen: false })}>Collapse</button>
+            </div>
+          </div>
+          <div className="inbox-feed-meta">
+            {inbox.lastUpdated ? <span>Last checked {formatBoardTime(inbox.lastUpdated)}</span> : <span>Not checked yet</span>}
+            {inbox.accounts.length > 0 && (
+              <button type="button" className="inbox-account-pill" onClick={() => setAccountLegendOpen((open) => !open)} aria-expanded={accountLegendOpen}>
+                {inbox.accounts.length} account{inbox.accounts.length === 1 ? "" : "s"}
+              </button>
+            )}
+          </div>
+          {accountLegendOpen && inbox.accounts.length > 0 && (
+            <div className="inbox-account-legend">
+              {inbox.accounts.map((account) => (
+                <div key={account.id} className="inbox-account-row">
+                  <AccountIcon account={account} size="large" />
+                  <span>{account.email || account.label}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {inbox.loading && (
+            <div className="inbox-state">
+              <strong>Checking inbox...</strong>
+              <span>Looking for personal emails that need time or a reply.</span>
+            </div>
+          )}
+          {!inbox.loading && inbox.errorCode === "config_missing" && (
+            <div className="inbox-state">
+              <strong>Gmail not connected yet.</strong>
+              <span>Add Google OAuth env vars in Vercel to enable real inbox todos.</span>
+              <button type="button" onClick={() => setSetupNotesOpen((open) => !open)}>Setup notes</button>
+              {setupNotesOpen && (
+                <div className="setup-notes">
+                  <span>Required env vars:</span>
+                  <code>GOOGLE_CLIENT_ID</code>
+                  <code>GOOGLE_CLIENT_SECRET</code>
+                  <code>GMAIL_ACCOUNT_1_EMAIL</code>
+                  <code>GMAIL_ACCOUNT_1_REFRESH_TOKEN</code>
+                  <code>GMAIL_ACCOUNT_2_EMAIL</code>
+                  <code>GMAIL_ACCOUNT_2_REFRESH_TOKEN</code>
+                  <small>No passwords. No frontend secrets.</small>
+                </div>
+              )}
+            </div>
+          )}
+          {!inbox.loading && inbox.errorCode === "error" && (
+            <div className="inbox-state">
+              <strong>Could not load inbox todos.</strong>
+              <span>Greyboard is still available.</span>
+              <button type="button" onClick={() => void fetchInboxTodos()}>Retry</button>
+            </div>
+          )}
+          {!inbox.loading && !inbox.error && visibleTodos.length === 0 && (
+            <div className="inbox-state">
+              <strong>No email todos right now.</strong>
+              <span>Nothing personal-looking needs attention.</span>
+            </div>
+          )}
+          {!inbox.loading && !inbox.error && visibleTodos.map((todo) => {
+            const preview = inboxPreview.openTodoId === todo.id ? inboxPreview.byTodoId[todo.id] : null;
+            const previewError = inboxPreview.errorByTodoId[todo.id];
+            const isExpanded = expandedInboxId === todo.id;
+            return (
+              <article key={todo.id} className={`inbox-item urgency-${todo.urgency} ${isExpanded ? "is-expanded" : ""}`}>
+                <button
+                  type="button"
+                  className="inbox-item-main"
+                  onClick={() => setExpandedInboxId(isExpanded ? null : todo.id)}
+                  aria-expanded={isExpanded}
+                >
+                  <b>{urgencyLabel(todo.urgency)}</b>
+                  <span>{todo.title}</span>
+                  {todo.dueDate && <em>{todo.dueDate}</em>}
+                </button>
+                <small className="inbox-item-source">
+                  <AccountIcon account={accountForTodo(todo, inbox.accounts)} />
+                  <span>{todo.subject || todo.contactName || todo.accountLabel || "Gmail"}</span>
+                </small>
+                {isExpanded && (
+                  <div className="inbox-item-expanded">
+                    <span><strong>Next:</strong> {todo.suggestedAction}</span>
+                    {todo.suggestedDraft && <span><strong>Draft:</strong> {todo.suggestedDraft}</span>}
+                    <span className="inbox-context-line"><strong>Context:</strong> {todo.reason}</span>
+                    <div className="inbox-item-actions">
+                      <button type="button" onClick={() => addInboxTodoToBoard(todo)}>Add to board</button>
+                      <button type="button" onClick={() => void fetchInboxEmailPreview(todo)}>
+                        {inboxPreview.loadingTodoId === todo.id ? "Loading" : preview ? "Hide email" : "Preview email"}
+                      </button>
+                      {todo.suggestedDraft && <button type="button" onClick={() => void copyInboxDraft(todo)}>Copy draft</button>}
+                      {todo.gmailUrl && <button type="button" onClick={() => window.open(todo.gmailUrl, "_blank", "noopener,noreferrer")}>Open Gmail</button>}
+                      <button type="button" onClick={() => setTodoStatus(todo.id, "done")}>Done</button>
+                      <button type="button" onClick={() => setTodoStatus(todo.id, "dismissed")}>Hide</button>
+                    </div>
+                    {previewError && <span className="inbox-email-preview-error">{previewError}</span>}
+                    {preview && (
+                      <div className="inbox-email-preview">
+                        <div className="inbox-email-preview-header">
+                          <strong>{preview.subject || todo.subject || "Email"}</strong>
+                          {preview.date && <span>{formatBoardTime(preview.date)}</span>}
+                        </div>
+                        {preview.from && <span className="inbox-email-preview-meta">From: {preview.from}</span>}
+                        <pre className="inbox-email-preview-body">{preview.bodyText || preview.snippet || "No preview text."}</pre>
+                        {preview.bodyTruncated && <span className="inbox-email-preview-meta">Preview truncated.</span>}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </article>
+            );
+          })}
+        </aside>
+      )}
     </main>
   );
 }
@@ -3509,6 +3554,35 @@ function saveInboxStatus(status: InboxStatusState) {
   localStorage.setItem(INBOX_STATUS_STORAGE_KEY, JSON.stringify(status));
 }
 
+function hasStoredInboxPanel() {
+  return localStorage.getItem(INBOX_PANEL_STORAGE_KEY) != null;
+}
+
+function loadInboxPanel(): InboxPanelState {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(INBOX_PANEL_STORAGE_KEY) ?? "{}") as Partial<InboxPanelState>;
+    return {
+      isOpen: typeof parsed.isOpen === "boolean" ? parsed.isOpen : false,
+      width: clampInboxPanelWidth(parsed.width ?? INBOX_PANEL_DEFAULT_WIDTH),
+    };
+  } catch {
+    return { isOpen: false, width: INBOX_PANEL_DEFAULT_WIDTH };
+  }
+}
+
+function clampInboxPanelWidth(width: number) {
+  return clamp(width, INBOX_PANEL_MIN_WIDTH, Math.min(INBOX_PANEL_MAX_WIDTH, Math.max(INBOX_PANEL_MIN_WIDTH, window.innerWidth - 220)));
+}
+
+function usableCanvasWidth(panel: InboxPanelState) {
+  if (!panel.isOpen) return window.innerWidth;
+  return Math.max(260, window.innerWidth - clampInboxPanelWidth(panel.width));
+}
+
+function isDesktopInboxPanel() {
+  return window.innerWidth >= INBOX_PANEL_DESKTOP_MIN_WIDTH;
+}
+
 function applyInboxStatus(todos: InboxTodo[], status: InboxStatusState) {
   return todos.map((todo) => ({
     ...todo,
@@ -3535,16 +3609,16 @@ function saveStatusLabel(status: SaveStatus) {
 
 function formatInboxTodoText(todo: InboxTodo) {
   const detail = todo.subject || todo.contactName;
-  const header = `${todo.title}${detail ? ` — ${detail}` : ""}${todo.dueDate ? ` (${todo.dueDate})` : ""}`;
+  const header = `${todo.title}${detail ? ` - ${detail}` : ""}${todo.dueDate ? ` (${todo.dueDate})` : ""}`;
   return [
     header,
     "",
-    "Why:",
-    todo.reason,
-    "",
-    "Action:",
+    "Next:",
     todo.suggestedAction,
     ...(todo.suggestedDraft ? ["", "Draft:", todo.suggestedDraft] : []),
+    "",
+    "Context:",
+    todo.reason,
   ].join("\n");
 }
 

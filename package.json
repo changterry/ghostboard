@@ -8,6 +8,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "test": "node --test test/*.test.mjs",
+    "inbox:filter:test": "node --test test/inbox-classifier.test.mjs",
     "gmail:check": "node scripts/check-gmail-oauth.mjs",
     "gmail:token": "node scripts/generate-google-refresh-token.mjs",
     "preview": "vite preview --host 127.0.0.1"
